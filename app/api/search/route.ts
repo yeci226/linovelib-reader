@@ -5,7 +5,8 @@ import { cfFetchHtml } from "@/lib/cf-fetch";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const DOMAIN = "https://tw.linovelib.com";
+const DOMAIN = "https://www.bilinovel.com"; // no CF, use for search
+const TW_DOMAIN = "https://tw.linovelib.com"; // rewrite results to TW
 
 export type SearchResult = {
   id: string;
@@ -45,7 +46,7 @@ export async function GET(req: NextRequest) {
       const coverUrl =
         imgEl.attr("data-src") || imgEl.attr("src") || "";
 
-      const catalogUrl = `${DOMAIN}/novel/${id}/catalog`;
+      const catalogUrl = `${TW_DOMAIN}/novel/${id}/catalog`;
 
       results.push({ id, title, author, coverUrl, catalogUrl });
     });
@@ -73,7 +74,7 @@ export async function GET(req: NextRequest) {
           title,
           author: "",
           coverUrl,
-          catalogUrl: `${DOMAIN}/novel/${id}/catalog`,
+          catalogUrl: `${TW_DOMAIN}/novel/${id}/catalog`,
         });
       });
     }

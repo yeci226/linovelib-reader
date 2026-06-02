@@ -22,6 +22,8 @@ export default function Home() {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     const q = query.trim();
     if (!q) { setResults([]); setSearchError(""); return; }
+    // If it looks like a URL or ID, skip search
+    if (tryNormalizeUrl(q)) { setResults([]); setSearchError(""); return; }
 
     debounceRef.current = setTimeout(async () => {
       setSearching(true);
@@ -182,9 +184,11 @@ export default function Home() {
   );
 }
 
-/** 如果 input 像是 linovelib/bilinovel 的 URL，直接正規化回傳 catalog URL */
+/** 如果 input 像是 linovelib/bilinovel 的 URL 或純數字 ID，直接正規化回傳 catalog URL */
 function tryNormalizeUrl(input: string): string | null {
   const s = input.trim();
+  // Pure numeric ID e.g. "2139"
+  if (/^\d+$/.test(s)) return `https://tw.linovelib.com/novel/${s}/catalog`;
   if (!s.includes("linovelib.com") && !s.includes("bilinovel.com")) return null;
   try {
     const url = s.startsWith("http") ? new URL(s) : new URL("https://" + s);
