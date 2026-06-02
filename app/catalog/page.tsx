@@ -11,148 +11,14 @@ interface VolumeGroup {
   chapters: Chapter[];
 }
 
-async function fetchHtml(url: string): Promise<string> {
-  const res = await fetch(`/api/proxy?url=${encodeURIComponent(url)}`);
-  return res.text();
-}
-
-function parseCatalog(html: string, baseOrigin: string, catalogUrl: string): { title: string; coverUrl: string; groups: VolumeGroup[] } {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, "text/html");
-
-  const title = doc.querySelector("h1.book-title, h1")?.textContent?.trim() || "未知小說";
-
-  // Novel cover: try .book-img, .cover, then derive from URL pattern
-  const coverEl = doc.querySelector(".book-img img, .cover img, .novel-cover img") as HTMLImageElement | null;
-  const coverUrl = coverEl?.getAttribute("data-src") || coverEl?.src || "";
-
-  const groups: VolumeGroup[] = [];
-
-  // linovelib catalog structure:
-  //   ul.chapter-list > li.catalog-volume
-  //     li.chapter-bar > a > h3  (volume title)
-  //     li.volume-cover > img[data-src]  (volume cover)
-  //     li.jsChapter > a[href]  (chapter link; VIP = href "javascript:cid(N)")
-  const volumeEls = doc.querySelectorAll(".catalog-volume");
-
-  if (volumeEls.length > 0) {
-    volumeEls.forEach(vol => {
-      const titleEl = vol.querySelector(".chapter-bar h3, .chapter-bar a");
-      const volTitle = titleEl?.textContent?.trim() || "";
-      const coverImgEl = vol.querySelector("li.volume-cover img") as HTMLImageElement | null;
-      const volCover = coverImgEl?.getAttribute("data-src") || coverImgEl?.src || "";
-
-      const chapters: Chapter[] = [];
-      vol.querySelectorAll("li.jsChapter").forEach(li => {
-        const a = li.querySelector("a");
-        const text = a?.textContent?.trim() || li.textContent?.trim() || "";
-        if (!text) return;
-        const href = a?.getAttribute("href") || "";
-
-        // javascript:cid(N) or missing href — URL needs interpolation
-        const cidMatch = href.match(/javascript:cid\(\d+\)/);
-        if (cidMatch || !href) {
-          chapters.push({ title: text, url: "" }); // placeholder; filled below
-          return;
-        }
-
-        const fullUrl = href.startsWith("http") ? href : baseOrigin + href;
-        chapters.push({ title: text, url: fullUrl });
-      });
-
-      // Neighbor-based ID interpolation for cid(N) placeholders
-      const novelIdMatch = catalogUrl.match(/\/novel\/(\d+)\//);
-      const novelId = novelIdMatch ? novelIdMatch[1] : null;
-      if (novelId) {
-        const chapterIdFromUrl = (url: string) => {
-          const m = url.match(/\/novel\/\d+\/(\d+)\.html$/);
-          return m ? parseInt(m[1], 10) : null;
-        };
-
-        // Process each placeholder run
-        let i = 0;
-        while (i < chapters.length) {
-          if (chapters[i].url !== "") { i++; continue; }
-
-          // Find run of placeholders starting at i
-          let runEnd = i;
-          while (runEnd + 1 < chapters.length && chapters[runEnd + 1].url === "") runEnd++;
-          const runLen = runEnd - i + 1;
-
-          // Nearest unlocked neighbours
-          let prevId: number | null = null;
-          for (let j = i - 1; j >= 0; j--) {
-            if (chapters[j].url !== "") { prevId = chapterIdFromUrl(chapters[j].url); break; }
-          }
-          let nextId: number | null = null;
-          for (let j = runEnd + 1; j < chapters.length; j++) {
-            if (chapters[j].url !== "") { nextId = chapterIdFromUrl(chapters[j].url); break; }
-          }
-
-          for (let k = i; k <= runEnd; k++) {
-            const posInRun = k - i; // 0-indexed
-            let inferredId: number | null = null;
-
-            if (prevId !== null && nextId !== null && nextId - prevId === runLen + 1) {
-              // Perfect sequential gap — exact interpolation
-              inferredId = prevId + 1 + posInRun;
-            } else if (prevId !== null) {
-              // Best effort: continue from prev
-              inferredId = prevId + 1 + posInRun;
-            } else if (nextId !== null) {
-              // Best effort: count back from next
-              inferredId = nextId - runLen + posInRun;
-            }
-
-            if (inferredId !== null) {
-              chapters[k] = { ...chapters[k], url: `${baseOrigin}/novel/${novelId}/${inferredId}.html` };
-            }
-            // If truly no neighbours at all, chapter stays url="" and will be skipped below
-          }
-
-          i = runEnd + 1;
-        }
-      }
-
-      // Drop any remaining unresolved placeholders
-      const resolvedChapters = chapters.filter(ch => ch.url !== "");
-
-      if (volTitle || resolvedChapters.length > 0) {
-        groups.push({ volTitle, coverUrl: volCover, chapters: resolvedChapters });
-      }
-    });
-  } else {
-    // Fallback: original link-scraping approach
-    const seen = new Set<string>();
-    let currentGroup: VolumeGroup = { volTitle: "", coverUrl: "", chapters: [] };
-
-    doc.querySelectorAll("a[href]").forEach(el => {
-      const href = el.getAttribute("href") || "";
-      const text = el.textContent?.trim() || "";
-      if (!text) return;
-
-      if (/\/novel\/\d+\/vol_\d+\.html$/.test(href)) {
-        if (currentGroup.chapters.length > 0 || currentGroup.volTitle) {
-          groups.push(currentGroup);
-        }
-        currentGroup = { volTitle: text, coverUrl: "", chapters: [] };
-        return;
-      }
-
-      if (/\/novel\/\d+\/\d+\.html$/.test(href) && !href.startsWith("javascript")) {
-        const fullUrl = href.startsWith("http") ? href : baseOrigin + href;
-        if (!seen.has(fullUrl)) {
-          seen.add(fullUrl);
-          currentGroup.chapters.push({ title: text, url: fullUrl });
-        }
-      }
-    });
-    if (currentGroup.chapters.length > 0 || currentGroup.volTitle) {
-      groups.push(currentGroup);
-    }
+async function fetchCatalog(url: string): Promise<{ title: string; coverUrl: string; groups: VolumeGroup[] }> {
+  const res = await fetch(`/api/catalog?url=${encodeURIComponent(url)}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || `HTTP ${res.status}`);
   }
-
-  return { title, coverUrl, groups };
+  const data = await res.json() as { title: string; coverUrl: string; volumes: VolumeGroup[] };
+  return { title: data.title, coverUrl: data.coverUrl, groups: data.volumes };
 }
 
 function CatalogContent() {
@@ -176,8 +42,8 @@ function CatalogContent() {
 
   const allChapters: Chapter[] = groups.flatMap(g => g.chapters);
 
-  // Shared logic to apply a freshly-parsed catalog to state + persistence
-  function applyParsed(parsed: ReturnType<typeof parseCatalog>, catUrl: string) {
+  // Shared logic to apply a fetched catalog to state + persistence
+  function applyParsed(parsed: { title: string; coverUrl: string; groups: VolumeGroup[] }, catUrl: string) {
     let cover = parsed.coverUrl;
     if (!cover) {
       const m = catUrl.match(/\/novel\/(\d+)/);
@@ -217,8 +83,6 @@ function CatalogContent() {
     const existing = getEntryFor(catalogUrl);
     if (existing) setEntry(existing);
 
-    const baseOrigin = new URL(catalogUrl).origin;
-
     // ── Cache-first: if we have cached catalog data, show it immediately ──
     const cached = getCatalogCache(catalogUrl);
     if (cached) {
@@ -229,8 +93,8 @@ function CatalogContent() {
       // Background-refresh only if cache is older than 1 day
       const ONE_DAY = 24 * 60 * 60 * 1000;
       if (Date.now() - cached.cachedAt > ONE_DAY) {
-        fetchHtml(catalogUrl)
-          .then(html => applyParsed(parseCatalog(html, baseOrigin, catalogUrl), catalogUrl))
+        fetchCatalog(catalogUrl)
+          .then(parsed => applyParsed(parsed, catalogUrl))
           .catch(() => { /* ignore background refresh errors */ });
       }
       return;
@@ -238,8 +102,8 @@ function CatalogContent() {
 
     // ── No cache: show loading spinner and wait ──
     setLoading(true);
-    fetchHtml(catalogUrl)
-      .then(html => applyParsed(parseCatalog(html, baseOrigin, catalogUrl), catalogUrl))
+    fetchCatalog(catalogUrl)
+      .then(parsed => applyParsed(parsed, catalogUrl))
       .catch(e => setError(String(e)))
       .finally(() => setLoading(false));
   }, [catalogUrl]); // eslint-disable-line react-hooks/exhaustive-deps
