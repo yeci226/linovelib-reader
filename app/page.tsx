@@ -1,49 +1,27 @@
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { getHistory, type HistoryEntry } from "@/lib/history";
-import type { SearchResult } from "@/app/api/search/route";
 
 export default function Home() {
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState("");
+  const [input, setInput] = useState("");
+  const [error, setError] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const router = useRouter();
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setHistory(getHistory());
   }, []);
 
-  // Debounced search as-you-type
-  useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    const q = query.trim();
-    if (!q) { setResults([]); setSearchError(""); return; }
-    // If it looks like a URL or ID, skip search
-    if (tryNormalizeUrl(q)) { setResults([]); setSearchError(""); return; }
-
-    debounceRef.current = setTimeout(async () => {
-      setSearching(true);
-      setSearchError("");
-      try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        setResults(data.results ?? []);
-      } catch (e) {
-        setSearchError(String(e));
-        setResults([]);
-      } finally {
-        setSearching(false);
-      }
-    }, 600);
-  }, [query]);
-
-  const goNovel = (catalogUrl: string) => {
-    router.push(`/catalog?url=${encodeURIComponent(catalogUrl)}`);
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const url = tryNormalizeUrl(input);
+    if (!url) {
+      setError("請輸入有效的小說 ID 或嗶哩輕小說網址");
+      return;
+    }
+    setError("");
+    router.push(`/catalog?url=${encodeURIComponent(url)}`);
   };
 
   const resumeReading = (entry: HistoryEntry) => {
@@ -57,8 +35,6 @@ export default function Home() {
       ? Math.round(((entry.lastChapterIndex + 1) / entry.totalChapters) * 100)
       : 0;
 
-  const showResults = query.trim().length > 0;
-
   return (
     <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "60px 24px 80px" }}>
       <div style={{ fontSize: 11, letterSpacing: ".2em", textTransform: "uppercase", color: "var(--accent)", opacity: .7, marginBottom: 8 }}>
@@ -68,87 +44,55 @@ export default function Home() {
         輕小說閱讀器
       </h1>
       <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 36 }}>
-        搜尋小說名稱或貼上網址即可開始閱讀
+        輸入小說 ID 或貼上嗶哩輕小說網址開始閱讀
       </p>
 
-      {/* Search bar */}
-      <div style={{ width: "100%", maxWidth: 560, position: "relative" }}>
-        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", display: "flex", alignItems: "center", padding: "4px 4px 4px 16px", gap: 8 }}>
-          <span style={{ color: "var(--text-dim)", fontSize: 15, flexShrink: 0 }}>🔍</span>
+      {/* Input */}
+      <form onSubmit={handleSubmit} style={{ width: "100%", maxWidth: 560 }}>
+        <div style={{ background: "var(--surface)", border: `1px solid ${error ? "#e06c6c" : "var(--border)"}`, borderRadius: "var(--radius)", display: "flex", alignItems: "center", padding: "4px 4px 4px 16px", gap: 8, transition: "border-color .2s" }}>
           <input
             type="text"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="搜尋小說 或 貼上 linovelib 網址"
+            value={input}
+            onChange={e => { setInput(e.target.value); setError(""); }}
+            placeholder="小說 ID（如 2139）或 linovelib 網址"
             style={{ flex: 1, background: "none", border: "none", outline: "none", color: "var(--text)", fontSize: 14, padding: "10px 0" }}
             autoComplete="off"
           />
-          {query && (
-            <button onClick={() => { setQuery(""); setResults([]); }} style={{ background: "none", border: "none", color: "var(--text-dim)", fontSize: 18, padding: "4px 8px", cursor: "pointer" }}>✕</button>
-          )}
-          {!query && (
-            <button
-              onClick={() => {
-                const normalized = tryNormalizeUrl(query);
-                if (normalized) router.push(`/catalog?url=${encodeURIComponent(normalized)}`);
-              }}
-              style={{ background: "var(--accent)", color: "#0a0a0d", border: "none", borderRadius: 7, padding: "10px 20px", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}
-            >
-              開始閱讀
-            </button>
-          )}
+          <button type="submit" style={{ background: "var(--accent)", color: "#0a0a0d", border: "none", borderRadius: 7, padding: "10px 20px", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}>
+            開始閱讀
+          </button>
         </div>
+        {error && <p style={{ color: "#e06c6c", fontSize: 12, marginTop: 6 }}>{error}</p>}
+      </form>
 
-        {/* URL shortcut: if input looks like a URL */}
-        {query.trim() && tryNormalizeUrl(query) && (
-          <div
-            style={{ marginTop: 4, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "10px 16px", cursor: "pointer", fontSize: 13, color: "var(--accent)" }}
-            onClick={() => router.push(`/catalog?url=${encodeURIComponent(tryNormalizeUrl(query)!)}`)}
-          >
-            → 直接開啟這個網址
-          </div>
-        )}
-
-        {/* Search results */}
-        {showResults && !tryNormalizeUrl(query) && (
-          <div style={{ marginTop: 4, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", overflow: "hidden" }}>
-            {searching && (
-              <div style={{ padding: "16px", textAlign: "center", color: "var(--text-dim)", fontSize: 13 }}>搜尋中…</div>
-            )}
-            {searchError && (
-              <div style={{ padding: "16px", color: "#e06c6c", fontSize: 13 }}>搜尋失敗：{searchError}</div>
-            )}
-            {!searching && !searchError && results.length === 0 && query.trim() && (
-              <div style={{ padding: "16px", color: "var(--text-dim)", fontSize: 13, textAlign: "center" }}>沒有結果</div>
-            )}
-            {!searching && results.map(r => (
-              <div
-                key={r.id}
-                onClick={() => goNovel(r.catalogUrl)}
-                style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid var(--border)", transition: "background .1s" }}
-                onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.background = "var(--surface2)"}
-                onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.background = ""}
-              >
-                <div style={{ width: 36, height: 50, flexShrink: 0, borderRadius: 3, overflow: "hidden", border: "1px solid var(--border)", background: "var(--surface2)" }}>
-                  {r.coverUrl ? (
-                    <img src={`/api/image?url=${encodeURIComponent(r.coverUrl)}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  ) : (
-                    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, color: "var(--text-dim)" }}>📖</div>
-                  )}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.title}</div>
-                  {r.author && <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{r.author}</div>}
-                </div>
-                <span style={{ color: "var(--text-dim)", fontSize: 16 }}>›</span>
-              </div>
-            ))}
-          </div>
-        )}
+      {/* How-to */}
+      <div style={{ width: "100%", maxWidth: 560, marginTop: 20, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "18px 20px" }}>
+        <div style={{ fontSize: 11, letterSpacing: ".15em", textTransform: "uppercase", color: "var(--accent)", marginBottom: 14, opacity: .8 }}>如何取得小說 ID</div>
+        <ol style={{ margin: 0, paddingLeft: 18, listStyle: "decimal" }}>
+          {[
+            <>前往 <a href="https://tw.linovelib.com" target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", textDecoration: "none" }}>tw.linovelib.com</a> 搜尋想讀的小說</>,
+            "點入小說頁面",
+            <>從網址列複製網址，例如 <code style={codeStyle}>tw.linovelib.com/novel/2139.html</code></>,
+            "貼回上方輸入框，或直接輸入數字 ID（如 2139）",
+          ].map((step, i) => (
+            <li key={i} style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.8, marginBottom: 2 }}>{step}</li>
+          ))}
+        </ol>
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border)", display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {["2139", "tw.linovelib.com/novel/2139.html", "tw.linovelib.com/novel/2139/catalog"].map(ex => (
+            <button
+              key={ex}
+              onClick={() => { setInput(ex); setError(""); }}
+              style={{ fontSize: 11, color: "var(--text-dim)", background: "var(--surface2, var(--border))", border: "1px solid var(--border)", borderRadius: 4, padding: "3px 8px", cursor: "pointer" }}
+            >
+              {ex}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Reading history */}
-      {history.length > 0 && !showResults && (
+      {/* History */}
+      {history.length > 0 && (
         <div style={{ width: "100%", maxWidth: 560, marginTop: 48 }}>
           <div style={{ fontSize: 11, letterSpacing: ".15em", textTransform: "uppercase", color: "var(--text-dim)", marginBottom: 12 }}>
             繼續閱讀
@@ -184,11 +128,20 @@ export default function Home() {
   );
 }
 
-/** 如果 input 像是 linovelib/bilinovel 的 URL 或純數字 ID，直接正規化回傳 catalog URL */
+const codeStyle: React.CSSProperties = {
+  fontFamily: "monospace",
+  fontSize: 11,
+  background: "var(--surface2, #222)",
+  padding: "1px 5px",
+  borderRadius: 3,
+};
+
 function tryNormalizeUrl(input: string): string | null {
   const s = input.trim();
-  // Pure numeric ID e.g. "2139"
+  if (!s) return null;
+  // Pure numeric ID
   if (/^\d+$/.test(s)) return `https://tw.linovelib.com/novel/${s}/catalog`;
+  // URL
   if (!s.includes("linovelib.com") && !s.includes("bilinovel.com")) return null;
   try {
     const url = s.startsWith("http") ? new URL(s) : new URL("https://" + s);
