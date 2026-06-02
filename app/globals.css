@@ -1,0 +1,55 @@
+/* app/globals.css */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:          #0f0f12;
+  --surface:     #17171c;
+  --surface2:    #1e1e26;
+  --border:      #2a2a35;
+  --text:        #e2ddd5;
+  --text-muted:  #7a7585;
+  --text-dim:    #4a4558;
+  --accent:      #c8a96e;
+  --accent-dim:  #7a6440;
+  --radius:      10px;
+  --font:        Arial, Helvetica, sans-serif;
+}
+
+/* ── Sepia theme (護眼黃) ── */
+[data-theme="sepia"] {
+  --bg:          #f4efe6;
+  --surface:     #ede6d8;
+  --surface2:    #e5dcc8;
+  --border:      #cfc5af;
+  --text:        #3b2f1e;
+  --text-muted:  #7a6a55;
+  --text-dim:    #a89880;
+  --accent:      #8b5e2a;
+  --accent-dim:  #c8a96e;
+}
+
+/* ── Light theme (淺色) ── */
+[data-theme="light"] {
+  --bg:          #f8f8f8;
+  --surface:     #ffffff;
+  --surface2:    #f0f0f0;
+  --border:      #e0e0e0;
+  --text:        #1a1a1a;
+  --text-muted:  #666666;
+  --text-dim:    #aaaaaa;
+  --accent:      #8b5e2a;
+  --accent-dim:  #c8a96e;
+}
+
+html { background: var(--bg); }
+html, body { transition: background .2s, color .2s; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+button { cursor: pointer; font-family: var(--font); }

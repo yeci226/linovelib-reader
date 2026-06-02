@@ -1,0 +1,25 @@
+{
+  "name": "輕小說閱讀器",
+  "short_name": "輕小說",
+  "description": "嗶哩輕小說線上閱讀器",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f0f12",
+  "theme_color": "#c8a96e",
+  "orientation": "portrait",
+  "lang": "zh-TW",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
