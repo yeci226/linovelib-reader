@@ -1,12 +1,15 @@
 /**
- * Cloudflare-aware fetch via FlareSolverr.
+ * HTML fetcher with Playwright backend support.
  *
- * FlareSolverr 跑 headless Chromium 解 CF challenge，回傳 HTML + cookies。
- * 解過一次後我們把 cookies 快取，後續直接用普通 fetch 重用，省下 5-10 秒。
- *
- * Docs: https://github.com/FlareSolverr/FlareSolverr
+ * Priority:
+ *  1. PLAYWRIGHT_BACKEND_URL is set → call the Mac Playwright server (real Chromium + stealth)
+ *  2. FlareSolverr available → use it
+ *  3. Direct fetch fallback
  */
 import { setTimeout as sleep } from "node:timers/promises";
+
+const PLAYWRIGHT_BACKEND_URL = process.env.PLAYWRIGHT_BACKEND_URL ?? "";
+const PLAYWRIGHT_AUTH_TOKEN = process.env.PLAYWRIGHT_AUTH_TOKEN ?? "";
 
 const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL ?? "http://localhost:8191/v1";
 
@@ -20,16 +23,28 @@ const DEFAULT_HEADERS = {
   Cookie: "night=0",
 };
 
+/** Call the Mac Playwright backend's /fetch endpoint */
+async function fetchViaPlaywrightBackend(url: string): Promise<string> {
+  const endpoint = `${PLAYWRIGHT_BACKEND_URL}/fetch?url=${encodeURIComponent(url)}`;
+  const res = await fetch(endpoint, {
+    headers: { Authorization: `Bearer ${PLAYWRIGHT_AUTH_TOKEN}` },
+    // 60s timeout — Playwright can be slow on cold start
+    signal: AbortSignal.timeout(65_000),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Playwright backend HTTP ${res.status}: ${body}`);
+  }
+  return res.text();
+}
+
 type CookieJarEntry = {
   cookieHeader: string;
   userAgent: string;
-  expiresAt: number; // epoch ms
+  expiresAt: number;
 };
 
-// host -> cookies. CF clearance is per-host.
 const jar = new Map<string, CookieJarEntry>();
-
-// Cookie 重用窗口：CF clearance 一般有效約 30 分鐘。保守設 20 分。
 const COOKIE_TTL_MS = 20 * 60 * 1000;
 
 type FlareResp = {
@@ -40,7 +55,7 @@ type FlareResp = {
     status: number;
     cookies: { name: string; value: string; domain: string }[];
     userAgent: string;
-    response: string; // HTML
+    response: string;
   };
 };
 
@@ -48,73 +63,56 @@ async function solveWithFlareSolverr(url: string): Promise<FlareResp["solution"]
   const res = await fetch(FLARESOLVERR_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      cmd: "request.get",
-      url,
-      maxTimeout: 60000,
-    }),
+    body: JSON.stringify({ cmd: "request.get", url, maxTimeout: 60000 }),
   });
-  if (!res.ok) {
-    throw new Error(`FlareSolverr HTTP ${res.status}: ${await res.text()}`);
-  }
+  if (!res.ok) throw new Error(`FlareSolverr HTTP ${res.status}: ${await res.text()}`);
   const data = (await res.json()) as FlareResp;
-  if (data.status !== "ok" || !data.solution) {
+  if (data.status !== "ok" || !data.solution)
     throw new Error(`FlareSolverr failed: ${data.message}`);
-  }
   return data.solution;
 }
 
 function cacheCookies(host: string, sol: NonNullable<FlareResp["solution"]>) {
   const cookieHeader = sol.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-  jar.set(host, {
-    cookieHeader,
-    userAgent: sol.userAgent || UA,
-    expiresAt: Date.now() + COOKIE_TTL_MS,
-  });
+  jar.set(host, { cookieHeader, userAgent: sol.userAgent || UA, expiresAt: Date.now() + COOKIE_TTL_MS });
 }
 
 function getCachedJar(host: string): CookieJarEntry | null {
   const entry = jar.get(host);
   if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    jar.delete(host);
-    return null;
-  }
+  if (Date.now() > entry.expiresAt) { jar.delete(host); return null; }
   return entry;
 }
 
 /**
- * Fetch a URL, transparently handling Cloudflare.
- * Returns the HTML body as string.
+ * Fetch a URL, bypassing Cloudflare.
  *
  * Strategy:
- *  1. Try direct fetch with cached CF cookies (if any).
- *  2. If response looks like a CF challenge (403/503 or cf-mitigated header), fall back to FlareSolverr.
- *  3. Cache the new cookies for subsequent requests.
+ *  1. Playwright backend (if PLAYWRIGHT_BACKEND_URL set) — real browser, best quality
+ *  2. FlareSolverr (if running locally)
+ *  3. Direct fetch with cached CF cookies
+ *  4. Direct fetch fallback
  */
 export async function cfFetchHtml(url: string): Promise<string> {
+  // 1. Playwright backend
+  if (PLAYWRIGHT_BACKEND_URL) {
+    return fetchViaPlaywrightBackend(url);
+  }
+
   const host = new URL(url).host;
   const cached = getCachedJar(host);
 
   if (cached) {
     const direct = await fetch(url, {
-      headers: {
-        ...DEFAULT_HEADERS,
-        "User-Agent": cached.userAgent,
-        Cookie: `night=0; ${cached.cookieHeader}`,
-      },
+      headers: { ...DEFAULT_HEADERS, "User-Agent": cached.userAgent, Cookie: `night=0; ${cached.cookieHeader}` },
     });
-    if (direct.ok && !isCfChallenge(direct)) {
-      return await direct.text();
-    }
-    // cookies dead — drop and re-solve
+    if (direct.ok && !isCfChallenge(direct)) return await direct.text();
     jar.delete(host);
   }
 
-  // small jitter to avoid burst
   await sleep(200 + Math.floor(Math.random() * 300));
 
-  // Try FlareSolverr if available, otherwise fall back to direct fetch
+  // 2. FlareSolverr
   try {
     const sol = await solveWithFlareSolverr(url);
     if (!sol) throw new Error("no solution");
@@ -122,9 +120,9 @@ export async function cfFetchHtml(url: string): Promise<string> {
     return sol.response;
   } catch (e) {
     const msg = String(e);
-    // If FlareSolverr is simply not running, fall back to direct fetch
     if (msg.includes("ECONNREFUSED") || msg.includes("fetch failed") || msg.includes("500")) {
       console.warn("[cf-fetch] FlareSolverr unavailable, falling back to direct fetch:", msg);
+      // 3. Direct fetch fallback
       const res = await fetch(url, { headers: DEFAULT_HEADERS });
       return await res.text();
     }
@@ -134,9 +132,9 @@ export async function cfFetchHtml(url: string): Promise<string> {
 
 function isCfChallenge(res: Response): boolean {
   if (res.status === 403 || res.status === 503) return true;
-  const server = res.headers.get("server") ?? "";
   const mitigated = res.headers.get("cf-mitigated");
   if (mitigated) return true;
+  const server = res.headers.get("server") ?? "";
   if (server.toLowerCase().includes("cloudflare") && res.status >= 400) return true;
   return false;
 }
