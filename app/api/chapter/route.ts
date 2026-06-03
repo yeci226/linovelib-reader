@@ -423,31 +423,58 @@ async function extractPage(
       });
     }
 
-    contentEl.find("p, figure").each((_, el) => {
+    const extractImgSrc = (el: ReturnType<typeof $>): string => {
+      return (
+        el.attr("src") ??
+        el.attr("data-src") ??
+        el.attr("data-original") ??
+        ""
+      );
+    };
+
+    // Iterate direct children of contentEl to preserve order and avoid double-counting
+    contentEl.children().each((_, el) => {
       const tag = (el as { name?: string }).name ?? "";
 
-      // <figure> or <p> containing only an <img>
-      const imgEl = $(el).find("img").first();
-      if (imgEl.length) {
-        const src =
-          imgEl.attr("src") ??
-          imgEl.attr("data-src") ??
-          imgEl.attr("data-original") ??
-          "";
+      // Standalone <img> direct child
+      if (tag === "img") {
+        const src = extractImgSrc($(el));
         if (src && !src.startsWith("data:")) {
           const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
           content += `[IMG:${abs}]\n\n`;
-          return;
         }
+        return;
       }
 
-      // Skip <figure> without usable <img>
-      if (tag === "figure") return;
+      // <figure> or <p> containing an <img>
+      if (tag === "p" || tag === "figure") {
+        const imgEl = $(el).find("img").first();
+        if (imgEl.length) {
+          const src = extractImgSrc(imgEl);
+          if (src && !src.startsWith("data:")) {
+            const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
+            content += `[IMG:${abs}]\n\n`;
+            return;
+          }
+        }
+        if (tag === "figure") return;
+        const text = $(el).text().trim();
+        if (!text) return;
+        content += text + "\n\n";
+        return;
+      }
 
-      // Plain text paragraph
-      const text = $(el).text().trim();
-      if (!text) return;
-      content += text + "\n\n";
+      // <center> may wrap an image
+      if (tag === "center") {
+        const imgEl = $(el).find("img").first();
+        if (imgEl.length) {
+          const src = extractImgSrc(imgEl);
+          if (src && !src.startsWith("data:")) {
+            const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
+            content += `[IMG:${abs}]\n\n`;
+          }
+        }
+      }
     });
   }
 
