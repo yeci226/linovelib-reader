@@ -82,6 +82,35 @@ async function fetchChapterPage(url: string): Promise<ChapterPageApiResult> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Prefetch store — holds the first-page API result for the next chapter so
+// navigation feels instant.  Lives in module scope (cleared on full page reload).
+// ---------------------------------------------------------------------------
+const prefetchStore = new Map<string, ChapterPageApiResult>();
+
+/** Prefetch the first page of a chapter and cache the result for instant navigation. */
+async function prefetchNextChapter(url: string): Promise<void> {
+  if (!url || prefetchStore.has(url)) return;
+  // Check full chapter cache first — nothing to prefetch if already complete
+  if (getChapterCache(url)) return;
+  try {
+    const result = await fetchChapterPage(url);
+    prefetchStore.set(url, result);
+    // Single-page chapters can be saved to full chapter cache immediately
+    if (!result.nextPageUrl) {
+      saveChapterCache(url, {
+        title: result.title,
+        subtitle: "",
+        nodes: contentToNodes(result.content),
+        nextChapterUrl: result.nextChapterUrl,
+      });
+      prefetchStore.delete(url); // full cache covers it now
+    }
+  } catch {
+    // Prefetch failures are silent — user will still get normal fetch on navigation
+  }
+}
+
 type ContentNode = { type: "text"; text: string } | { type: "image"; src: string; alt: string };
 
 /** Convert plain-text chapter content (paragraphs separated by \n\n) to ContentNode[] */
@@ -259,7 +288,7 @@ function ReadContent() {
         setNextTitle(cached.nextChapterUrl ? getCachedChapterTitle(cached.nextChapterUrl) : "");
         setPageCount(1);
         if (cached.nextChapterUrl) {
-          fetchChapterPage(cached.nextChapterUrl).catch(() => {});
+          prefetchNextChapter(cached.nextChapterUrl);
         }
         if (catalogUrl && cached.title) {
           const existing = getEntryFor(catalogUrl);
@@ -279,7 +308,10 @@ function ReadContent() {
         return;
       }
 
-      const data = await fetchChapterPage(chapterUrl);
+      // Use prefetched first-page result if available
+      const prefetched = prefetchStore.get(chapterUrl);
+      if (prefetched) prefetchStore.delete(chapterUrl);
+      const data = prefetched ?? await fetchChapterPage(chapterUrl);
       if (cancelled) return;
 
       const firstNodes = contentToNodes(data.content);
@@ -320,7 +352,7 @@ function ReadContent() {
           nextChapterUrl: data.nextChapterUrl,
         });
         if (data.nextChapterUrl) {
-          fetchChapterPage(data.nextChapterUrl).catch(() => {});
+          prefetchNextChapter(data.nextChapterUrl);
         }
         return;
       }
@@ -352,7 +384,7 @@ function ReadContent() {
               nextChapterUrl: pageData.nextChapterUrl,
             });
             if (pageData.nextChapterUrl) {
-              fetchChapterPage(pageData.nextChapterUrl).catch(() => {});
+              prefetchNextChapter(pageData.nextChapterUrl);
             }
           }
         } catch (e) {
