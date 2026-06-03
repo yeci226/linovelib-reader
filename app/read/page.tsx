@@ -119,7 +119,6 @@ function ReadContent() {
   const [subtitle, setSubtitle] = useState("");
   const [nodes, setNodes] = useState<ContentNode[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [readWidthIdx, setReadWidthIdx] = useState<number>(() => {
     if (typeof window === "undefined") return 0;
@@ -138,12 +137,10 @@ function ReadContent() {
   const [prevUrl, setPrevUrl] = useState<string | null>(null);
   const [nextTitle, setNextTitle] = useState("");
   const [prevTitle, setPrevTitle] = useState("");
-  // Sub-page state
-  const [nextPageUrl, setNextPageUrl] = useState<string | null>(null);
+  // Sub-page background loading state
+  const [loadingMore, setLoadingMore] = useState(false);
   const [pageCount, setPageCount] = useState(0);
-  const nextPageUrlRef = useRef<string | null>(null);
-  const loadingMoreRef = useRef(false);
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  const loadingChapterRef = useRef<string | null>(null); // tracks which chapterUrl is currently loading
 
   // Theme
   const [theme, setTheme] = useState<Theme>(() => {
@@ -231,7 +228,7 @@ function ReadContent() {
 
     setLoading(true);
     setLoadingMore(false);
-    loadingMoreRef.current = false;
+    loadingChapterRef.current = chapterUrl;
     setNodes([]);
     setSubtitle("");
     setError("");
@@ -239,8 +236,6 @@ function ReadContent() {
     setPrevUrl(null);
     setNextTitle("");
     setPrevTitle("");
-    setNextPageUrl(null);
-    nextPageUrlRef.current = null;
     setPageCount(0);
     window.scrollTo(0, 0);
 
@@ -248,6 +243,7 @@ function ReadContent() {
       // ── Cache-first: full chapter already cached ──
       const cached = getChapterCache(chapterUrl);
       if (cached) {
+        if (cancelled) return;
         setTitle(cached.title);
         setSubtitle(cached.subtitle);
         document.title = `${cached.title} — 輕小說閱讀器`;
@@ -256,10 +252,7 @@ function ReadContent() {
         setNextUrl(cached.nextChapterUrl);
         setNextTitle(cached.nextChapterUrl ? getCachedChapterTitle(cached.nextChapterUrl) : "");
         setPageCount(1);
-        // Cached entries have no sub-page state — treat as fully loaded
-        setNextPageUrl(null);
-        nextPageUrlRef.current = null;
-        // Warm next chapter's first sub-page only
+        // Warm next chapter in background
         if (cached.nextChapterUrl) {
           fetchChapterPage(cached.nextChapterUrl).catch(() => {});
         }
@@ -285,114 +278,92 @@ function ReadContent() {
       if (cancelled) return;
 
       const firstNodes = contentToNodes(data.content);
-      setTitle(data.title);
+      const chTitle = data.title;
+      setTitle(chTitle);
       setSubtitle("");
-      document.title = `${data.title} — 輕小說閱讀器`;
+      document.title = `${chTitle} — 輕小說閱讀器`;
       setNodes(firstNodes);
       setLoading(false);
       setPageCount(1);
-      setNextPageUrl(data.nextPageUrl);
-      nextPageUrlRef.current = data.nextPageUrl;
       setPrevUrl(data.prevChapterUrl);
       setPrevTitle(data.prevChapterUrl ? getCachedChapterTitle(data.prevChapterUrl) : "");
-      // nextChapterUrl is only authoritative on the last sub-page
-      if (!data.nextPageUrl) {
-        setNextUrl(data.nextChapterUrl);
-        setNextTitle(data.nextChapterUrl ? getCachedChapterTitle(data.nextChapterUrl) : "");
-        // Single-page chapter — cache it now
-        saveChapterCache(chapterUrl, {
-          title: data.title,
-          subtitle: "",
-          nodes: firstNodes,
-          nextChapterUrl: data.nextChapterUrl,
-        });
-        // Warm next chapter's first sub-page
-        if (data.nextChapterUrl) {
-          fetchChapterPage(data.nextChapterUrl).catch(() => {});
-        }
-      }
 
-      if (catalogUrl && data.title) {
+      if (catalogUrl && chTitle) {
         const existing = getEntryFor(catalogUrl);
         saveProgress({
           catalogUrl,
           novelTitle: existing?.novelTitle || "",
           coverUrl: existing?.coverUrl || "",
           lastChapterUrl: chapterUrl,
-          lastChapterTitle: data.title,
+          lastChapterTitle: chTitle,
           lastChapterIndex: existing?.lastChapterIndex ?? 0,
           totalChapters: existing?.totalChapters ?? 0,
           updatedAt: Date.now(),
           visitedChapters: existing?.visitedChapters ?? {},
         });
-        markChapterVisited(catalogUrl, chapterUrl, data.title);
+        markChapterVisited(catalogUrl, chapterUrl, chTitle);
       }
+
+      if (!data.nextPageUrl) {
+        // Single-page chapter
+        setNextUrl(data.nextChapterUrl);
+        setNextTitle(data.nextChapterUrl ? getCachedChapterTitle(data.nextChapterUrl) : "");
+        saveChapterCache(chapterUrl, {
+          title: chTitle,
+          subtitle: "",
+          nodes: firstNodes,
+          nextChapterUrl: data.nextChapterUrl,
+        });
+        if (data.nextChapterUrl) {
+          fetchChapterPage(data.nextChapterUrl).catch(() => {});
+        }
+        return;
+      }
+
+      // Multi-page chapter: eagerly load ALL remaining sub-pages in background
+      setLoadingMore(true);
+      const allNodes = [...firstNodes];
+      let nextPage: string | null = data.nextPageUrl;
+      let pages = 1;
+      while (nextPage) {
+        if (cancelled || loadingChapterRef.current !== chapterUrl) return;
+        try {
+          const pageData = await fetchChapterPage(nextPage);
+          if (cancelled || loadingChapterRef.current !== chapterUrl) return;
+          const moreNodes = contentToNodes(pageData.content);
+          allNodes.push(...moreNodes);
+          pages++;
+          setNodes([...allNodes]);
+          setPageCount(pages);
+          nextPage = pageData.nextPageUrl;
+          if (!nextPage) {
+            // Last sub-page reached
+            setNextUrl(pageData.nextChapterUrl);
+            setNextTitle(pageData.nextChapterUrl ? getCachedChapterTitle(pageData.nextChapterUrl) : "");
+            saveChapterCache(chapterUrl, {
+              title: chTitle,
+              subtitle: "",
+              nodes: allNodes,
+              nextChapterUrl: pageData.nextChapterUrl,
+            });
+            if (pageData.nextChapterUrl) {
+              fetchChapterPage(pageData.nextChapterUrl).catch(() => {});
+            }
+          }
+        } catch (e) {
+          console.error("[read] background sub-page load failed:", e);
+          break;
+        }
+      }
+      setLoadingMore(false);
     }
 
     loadInitial().catch(e => {
-      if (!cancelled) { setError(String(e)); setLoading(false); }
+      if (!cancelled) { setError(String(e)); setLoading(false); setLoadingMore(false); }
     });
 
     return () => { cancelled = true; };
   }, [chapterUrl, catalogUrl]);
-
-  // Load the next sub-page of the current chapter, append to nodes.
-  // Called by IntersectionObserver and by the manual fallback button.
-  const loadNextSubPage = async () => {
-    const url = nextPageUrlRef.current;
-    if (!url || loadingMoreRef.current) return;
-    loadingMoreRef.current = true;
-    setLoadingMore(true);
-    try {
-      const data = await fetchChapterPage(url);
-      const moreNodes = contentToNodes(data.content);
-      setNodes(prev => {
-        const merged = [...prev, ...moreNodes];
-        // If this was the last sub-page, persist the full chapter
-        if (!data.nextPageUrl) {
-          saveChapterCache(chapterUrl, {
-            title,
-            subtitle,
-            nodes: merged,
-            nextChapterUrl: data.nextChapterUrl,
-          });
-        }
-        return merged;
-      });
-      setPageCount(p => p + 1);
-      setNextPageUrl(data.nextPageUrl);
-      nextPageUrlRef.current = data.nextPageUrl;
-      if (!data.nextPageUrl) {
-        setNextUrl(data.nextChapterUrl);
-        setNextTitle(data.nextChapterUrl ? getCachedChapterTitle(data.nextChapterUrl) : "");
-        // Warm next chapter's first sub-page only
-        if (data.nextChapterUrl) {
-          fetchChapterPage(data.nextChapterUrl).catch(() => {});
-        }
-      }
-    } catch (e) {
-      console.error("[read] failed to load next sub-page:", e);
-    } finally {
-      loadingMoreRef.current = false;
-      setLoadingMore(false);
-    }
-  };
-
-  // IntersectionObserver: when sentinel comes into view, fetch next sub-page
-  useEffect(() => {
-    if (!nextPageUrl || loading) return;
-    const el = sentinelRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver(
-      entries => {
-        if (entries.some(e => e.isIntersecting)) loadNextSubPage();
-      },
-      { rootMargin: "1200px 0px" }, // start fetching ~1200px before bottom
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nextPageUrl, loading]);
 
   const goBack = () => {
     if (catalogUrl) router.push(`/catalog?url=${encodeURIComponent(catalogUrl)}`);
@@ -524,7 +495,7 @@ function ReadContent() {
               ) : (
                 <div key={i} style={{ textAlign: "center", margin: "2em 0" }}>
                   <img
-                    src={node.src}
+                    src={`/api/image?url=${encodeURIComponent(node.src)}`}
                     alt={node.alt}
                     loading="lazy"
                     style={{ maxWidth: "100%", maxHeight: 480, objectFit: "contain", borderRadius: 6, border: "1px solid var(--border)" }}
@@ -535,18 +506,10 @@ function ReadContent() {
           </div>
         )}
 
-        {/* Infinite-scroll sentinel + loader for next sub-page */}
-        {!loading && !error && nextPageUrl && (
-          <div ref={sentinelRef} style={{ padding: "32px 0", textAlign: "center", color: "var(--text-dim)", fontSize: 13 }}>
-            {loadingMore ? "載入下一頁…" : (
-              <button
-                onClick={loadNextSubPage}
-                style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-muted)", padding: "8px 18px", borderRadius: 20, fontSize: 12 }}
-              >
-                載入下一頁
-              </button>
-            )}
-            <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-dim)", opacity: 0.6 }}>第 {pageCount} 頁</div>
+        {/* Background sub-page loading indicator */}
+        {!loading && !error && loadingMore && (
+          <div style={{ padding: "16px 0", textAlign: "center", color: "var(--text-dim)", fontSize: 12, opacity: 0.6 }}>
+            載入剩餘內容中… (第 {pageCount} 頁)
           </div>
         )}
 
