@@ -166,8 +166,14 @@ async function renderPage(url) {
           const rect = child.getBoundingClientRect();
           if (rect.width === 0 && rect.height === 0) continue;
           const txt = (child.innerText || "").trim();
-          if (!txt) continue;
+          const hasImg = child.querySelector("img") !== null;
+          if (!txt && !hasImg) continue;
           if (txt.includes("內容加載失敗") || txt.includes("内容加载失败")) continue;
+          // Resolve lazy-load data-src → src for images
+          child.querySelectorAll("img[data-src]").forEach((img) => {
+            const ds = img.getAttribute("data-src");
+            if (ds) img.setAttribute("src", ds.startsWith("//") ? "https:" + ds : ds);
+          });
           // Strip the data-k* attribute so downstream parsing is clean
           [...child.attributes].forEach((a) => {
             if (a.name.startsWith("data-k")) child.removeAttribute(a.name);

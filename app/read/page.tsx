@@ -13,21 +13,73 @@ import {
   saveChapterCache,
   Bookmark,
 } from "@/lib/history";
+import { parseChapterHtml } from "@/lib/chapter-parser";
 
 
-type ChapterApiResult = {
+type ChapterPageApiResult = {
   title: string;
   content: string;
-  pages: number;
+  nextPageUrl: string | null;
   nextChapterUrl: string | null;
   prevChapterUrl: string | null;
   cached?: boolean;
 };
 
-async function fetchChapter(url: string): Promise<ChapterApiResult> {
+/** Fetch chapter content via the Next.js API route (preferred path). */
+async function fetchChapterPageViaApi(url: string): Promise<ChapterPageApiResult> {
   const res = await fetch(`/api/chapter?url=${encodeURIComponent(url)}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+/**
+ * Pure-frontend fallback: fetch raw HTML through the CORS-proxy route,
+ * then parse and unshuffle entirely in the browser.
+ * Used when the backend API is unavailable.
+ *
+ * Follows bili_novel_packer: always fetches from www.bilinovel.com (CN, no Cloudflare)
+ * so we get raw shuffled HTML that our algorithmic unshuffle can correctly restore.
+ */
+async function fetchChapterPageClientSide(url: string): Promise<ChapterPageApiResult> {
+  // Convert to CN domain (www.bilinovel.com) — no Cloudflare, returns raw shuffled HTML.
+  const cnUrl = url
+    .replace("tw.linovelib.com", "www.bilinovel.com")
+    .replace("cn.linovelib.com", "www.bilinovel.com");
+
+  const proxyUrl = `/api/proxy?url=${encodeURIComponent(cnUrl)}`;
+  const htmlRes = await fetch(proxyUrl);
+  if (!htmlRes.ok) throw new Error(`proxy HTTP ${htmlRes.status}`);
+  const html = await htmlRes.text();
+
+  // Extract chapterlog.js URL from the raw HTML so we get the correct LCG params
+  let chapterLogJs: string | null = null;
+  const clMatch = /src=["']([^"']*chapterlog\.js[^"']*)["']/.exec(html);
+  if (clMatch) {
+    try {
+      const clUrl = clMatch[1].startsWith("http")
+        ? clMatch[1]
+        : new URL(clMatch[1], cnUrl).toString();
+      const clRes = await fetch(`/api/proxy?url=${encodeURIComponent(clUrl)}`);
+      if (clRes.ok) chapterLogJs = await clRes.text();
+    } catch {
+      // fall through — parseChapterHtml will use FALLBACK_PARAMS
+    }
+  }
+
+  return parseChapterHtml(html, cnUrl, chapterLogJs);
+}
+
+/**
+ * Fetch a chapter page: try the API first; if it fails, fall back to
+ * pure client-side parsing so the reader works even when the backend is down.
+ */
+async function fetchChapterPage(url: string): Promise<ChapterPageApiResult> {
+  try {
+    return await fetchChapterPageViaApi(url);
+  } catch (apiErr) {
+    console.warn("[read] API unavailable, falling back to client-side parsing:", apiErr);
+    return fetchChapterPageClientSide(url);
+  }
 }
 
 type ContentNode = { type: "text"; text: string } | { type: "image"; src: string; alt: string };
@@ -38,7 +90,11 @@ function contentToNodes(content: string): ContentNode[] {
     .split(/\n\n+/)
     .map(line => line.trim())
     .filter(line => line.length > 0)
-    .map(text => ({ type: "text" as const, text }));
+    .map(line => {
+      const imgMatch = /^\[IMG:(https?:\/\/.+)\]$/.exec(line);
+      if (imgMatch) return { type: "image" as const, src: imgMatch[1], alt: "" };
+      return { type: "text" as const, text: line };
+    });
 }
 
 type Theme = "dark" | "sepia" | "light";
@@ -57,17 +113,37 @@ function ReadContent() {
   const chapterUrl = params.get("url") || "";
   const catalogUrl = params.get("catalog") || "";
 
+  const READ_WIDTHS = [660, 800, 960, 1200] as const;
+
   const [title, setTitle] = useState("");
   const [subtitle, setSubtitle] = useState("");
   const [nodes, setNodes] = useState<ContentNode[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
-  const [fontSize, setFontSize] = useState(17);
+  const [readWidthIdx, setReadWidthIdx] = useState<number>(() => {
+    if (typeof window === "undefined") return 0;
+    const v = parseInt(localStorage.getItem("linovelib-width-idx") ?? "0", 10);
+    return isNaN(v) ? 0 : Math.min(v, READ_WIDTHS.length - 1);
+  });
+  const readWidth = READ_WIDTHS[readWidthIdx];
+  const cycleWidth = () => setReadWidthIdx(i => (i + 1) % READ_WIDTHS.length);
+  const [fontSize, setFontSize] = useState<number>(() => {
+    if (typeof window === "undefined") return 17;
+    const v = parseInt(localStorage.getItem("linovelib-fontsize") ?? "17", 10);
+    return isNaN(v) ? 17 : Math.min(26, Math.max(14, v));
+  });
   const [progress, setProgress] = useState(0);
   const [nextUrl, setNextUrl] = useState<string | null>(null);
   const [prevUrl, setPrevUrl] = useState<string | null>(null);
   const [nextTitle, setNextTitle] = useState("");
   const [prevTitle, setPrevTitle] = useState("");
+  // Sub-page state
+  const [nextPageUrl, setNextPageUrl] = useState<string | null>(null);
+  const [pageCount, setPageCount] = useState(0);
+  const nextPageUrlRef = useRef<string | null>(null);
+  const loadingMoreRef = useRef(false);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   // Theme
   const [theme, setTheme] = useState<Theme>(() => {
@@ -104,6 +180,16 @@ function ReadContent() {
   useEffect(() => {
     localStorage.setItem("linovelib-font", fontFamily);
   }, [fontFamily]);
+
+  // Persist font size
+  useEffect(() => {
+    localStorage.setItem("linovelib-fontsize", String(fontSize));
+  }, [fontSize]);
+
+  // Persist read width
+  useEffect(() => {
+    localStorage.setItem("linovelib-width-idx", String(readWidthIdx));
+  }, [readWidthIdx]);
 
   // Load bookmarks when chapterUrl changes
   useEffect(() => {
@@ -144,6 +230,8 @@ function ReadContent() {
     let cancelled = false;
 
     setLoading(true);
+    setLoadingMore(false);
+    loadingMoreRef.current = false;
     setNodes([]);
     setSubtitle("");
     setError("");
@@ -151,10 +239,13 @@ function ReadContent() {
     setPrevUrl(null);
     setNextTitle("");
     setPrevTitle("");
+    setNextPageUrl(null);
+    nextPageUrlRef.current = null;
+    setPageCount(0);
     window.scrollTo(0, 0);
 
-    async function fetchAll() {
-      // ── Cache-first ──
+    async function loadInitial() {
+      // ── Cache-first: full chapter already cached ──
       const cached = getChapterCache(chapterUrl);
       if (cached) {
         setTitle(cached.title);
@@ -164,67 +255,144 @@ function ReadContent() {
         setLoading(false);
         setNextUrl(cached.nextChapterUrl);
         setNextTitle(cached.nextChapterUrl ? getCachedChapterTitle(cached.nextChapterUrl) : "");
+        setPageCount(1);
+        // Cached entries have no sub-page state — treat as fully loaded
+        setNextPageUrl(null);
+        nextPageUrlRef.current = null;
+        // Warm next chapter's first sub-page only
+        if (cached.nextChapterUrl) {
+          fetchChapterPage(cached.nextChapterUrl).catch(() => {});
+        }
+        if (catalogUrl && cached.title) {
+          const existing = getEntryFor(catalogUrl);
+          saveProgress({
+            catalogUrl,
+            novelTitle: existing?.novelTitle || "",
+            coverUrl: existing?.coverUrl || "",
+            lastChapterUrl: chapterUrl,
+            lastChapterTitle: cached.title,
+            lastChapterIndex: existing?.lastChapterIndex ?? 0,
+            totalChapters: existing?.totalChapters ?? 0,
+            updatedAt: Date.now(),
+            visitedChapters: existing?.visitedChapters ?? {},
+          });
+          markChapterVisited(catalogUrl, chapterUrl, cached.title);
+        }
         return;
       }
 
-      const data = await fetchChapter(chapterUrl);
+      const data = await fetchChapterPage(chapterUrl);
       if (cancelled) return;
 
-      const nodes = contentToNodes(data.content);
-      const chapterTitle = data.title;
-      const finalNext = data.nextChapterUrl;
-      const finalPrev = data.prevChapterUrl;
-
-      setTitle(chapterTitle);
+      const firstNodes = contentToNodes(data.content);
+      setTitle(data.title);
       setSubtitle("");
-      document.title = `${chapterTitle} — 輕小說閱讀器`;
-      setNodes(nodes);
+      document.title = `${data.title} — 輕小說閱讀器`;
+      setNodes(firstNodes);
       setLoading(false);
-      setNextUrl(finalNext);
-      setPrevUrl(finalPrev);
-      setNextTitle(finalNext ? getCachedChapterTitle(finalNext) : "");
-      setPrevTitle(finalPrev ? getCachedChapterTitle(finalPrev) : "");
-
-      // Save to chapter cache
-      saveChapterCache(chapterUrl, {
-        title: chapterTitle,
-        subtitle: "",
-        nodes,
-        nextChapterUrl: finalNext,
-      });
-
-      // Background-prefetch next chapter (warms server cache)
-      if (finalNext && !cancelled) {
-        fetchChapter(finalNext).then(d => {
-          if (cancelled) return;
-          if (d.title) setNextTitle(d.title);
-          if (d.nextChapterUrl) fetchChapter(d.nextChapterUrl).catch(() => {});
-        }).catch(() => {});
+      setPageCount(1);
+      setNextPageUrl(data.nextPageUrl);
+      nextPageUrlRef.current = data.nextPageUrl;
+      setPrevUrl(data.prevChapterUrl);
+      setPrevTitle(data.prevChapterUrl ? getCachedChapterTitle(data.prevChapterUrl) : "");
+      // nextChapterUrl is only authoritative on the last sub-page
+      if (!data.nextPageUrl) {
+        setNextUrl(data.nextChapterUrl);
+        setNextTitle(data.nextChapterUrl ? getCachedChapterTitle(data.nextChapterUrl) : "");
+        // Single-page chapter — cache it now
+        saveChapterCache(chapterUrl, {
+          title: data.title,
+          subtitle: "",
+          nodes: firstNodes,
+          nextChapterUrl: data.nextChapterUrl,
+        });
+        // Warm next chapter's first sub-page
+        if (data.nextChapterUrl) {
+          fetchChapterPage(data.nextChapterUrl).catch(() => {});
+        }
       }
 
-      if (catalogUrl && chapterTitle) {
+      if (catalogUrl && data.title) {
         const existing = getEntryFor(catalogUrl);
         saveProgress({
           catalogUrl,
           novelTitle: existing?.novelTitle || "",
           coverUrl: existing?.coverUrl || "",
           lastChapterUrl: chapterUrl,
-          lastChapterTitle: chapterTitle,
+          lastChapterTitle: data.title,
           lastChapterIndex: existing?.lastChapterIndex ?? 0,
           totalChapters: existing?.totalChapters ?? 0,
           updatedAt: Date.now(),
           visitedChapters: existing?.visitedChapters ?? {},
         });
-        markChapterVisited(catalogUrl, chapterUrl, chapterTitle);
+        markChapterVisited(catalogUrl, chapterUrl, data.title);
       }
     }
 
-    fetchAll().catch(e => {
-        if (!cancelled) { setError(String(e)); setLoading(false); }
+    loadInitial().catch(e => {
+      if (!cancelled) { setError(String(e)); setLoading(false); }
     });
 
     return () => { cancelled = true; };
   }, [chapterUrl, catalogUrl]);
+
+  // Load the next sub-page of the current chapter, append to nodes.
+  // Called by IntersectionObserver and by the manual fallback button.
+  const loadNextSubPage = async () => {
+    const url = nextPageUrlRef.current;
+    if (!url || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const data = await fetchChapterPage(url);
+      const moreNodes = contentToNodes(data.content);
+      setNodes(prev => {
+        const merged = [...prev, ...moreNodes];
+        // If this was the last sub-page, persist the full chapter
+        if (!data.nextPageUrl) {
+          saveChapterCache(chapterUrl, {
+            title,
+            subtitle,
+            nodes: merged,
+            nextChapterUrl: data.nextChapterUrl,
+          });
+        }
+        return merged;
+      });
+      setPageCount(p => p + 1);
+      setNextPageUrl(data.nextPageUrl);
+      nextPageUrlRef.current = data.nextPageUrl;
+      if (!data.nextPageUrl) {
+        setNextUrl(data.nextChapterUrl);
+        setNextTitle(data.nextChapterUrl ? getCachedChapterTitle(data.nextChapterUrl) : "");
+        // Warm next chapter's first sub-page only
+        if (data.nextChapterUrl) {
+          fetchChapterPage(data.nextChapterUrl).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.error("[read] failed to load next sub-page:", e);
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  };
+
+  // IntersectionObserver: when sentinel comes into view, fetch next sub-page
+  useEffect(() => {
+    if (!nextPageUrl || loading) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      entries => {
+        if (entries.some(e => e.isIntersecting)) loadNextSubPage();
+      },
+      { rootMargin: "1200px 0px" }, // start fetching ~1200px before bottom
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextPageUrl, loading]);
 
   const goBack = () => {
     if (catalogUrl) router.push(`/catalog?url=${encodeURIComponent(catalogUrl)}`);
@@ -321,11 +489,12 @@ function ReadContent() {
             <button onClick={cycleFontFamily} style={btnStyle} title="切換字體">{fontLabel}</button>
             <button onClick={cycleLineHeight} style={btnStyle} title="切換行距">≡</button>
             <button onClick={cycleTheme} style={btnStyle} title="切換主題">{themeIcon}</button>
+            <button onClick={cycleWidth} style={btnStyle} title="調整閱讀寬度">{readWidth}</button>
           </div>
         </div>
       </div>
 
-      <div style={{ maxWidth: 660, margin: "0 auto", padding: "0 24px" }}>
+      <div style={{ maxWidth: readWidth, margin: "0 auto", padding: "0 24px", transition: "max-width .2s" }}>
         {!loading && !error && (
           <div style={{ textAlign: "center", marginBottom: 32 }}>
             {subtitle && (
@@ -366,6 +535,20 @@ function ReadContent() {
           </div>
         )}
 
+        {/* Infinite-scroll sentinel + loader for next sub-page */}
+        {!loading && !error && nextPageUrl && (
+          <div ref={sentinelRef} style={{ padding: "32px 0", textAlign: "center", color: "var(--text-dim)", fontSize: 13 }}>
+            {loadingMore ? "載入下一頁…" : (
+              <button
+                onClick={loadNextSubPage}
+                style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-muted)", padding: "8px 18px", borderRadius: 20, fontSize: 12 }}
+              >
+                載入下一頁
+              </button>
+            )}
+            <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-dim)", opacity: 0.6 }}>第 {pageCount} 頁</div>
+          </div>
+        )}
 
         {!loading && !error && (
           <div style={{ borderTop: "1px solid var(--border)", marginTop: 60, padding: "24px 0 56px", display: "flex", alignItems: "stretch", justifyContent: "space-between", gap: 10 }}>

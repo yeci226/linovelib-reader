@@ -4,7 +4,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { getEntryFor, saveProgress, getCatalogCache, saveCatalogCache, type HistoryEntry } from "@/lib/history";
 
-interface Chapter { title: string; url: string }
+interface Chapter { title: string; url: string | null }
 interface VolumeGroup {
   volTitle: string;
   coverUrl: string;
@@ -248,7 +248,8 @@ function CatalogContent() {
           ) : (
             searchResults.map(({ ch, volTitle, volMatch }) => {
               const isLast = !!ch.url && ch.url === lastChapterUrl;
-              const isVisited = !!visitedChapters[ch.url];
+              const isVisited = !!ch.url && !!visitedChapters[ch.url];
+              const isLocked = !ch.url;
               const volLabel = volMatch
                 ? <span style={{ fontSize: 10, color: "var(--text-dim)", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 6px", whiteSpace: "nowrap", flexShrink: 0, marginRight: isLast ? 6 : 0 }}>
                     {highlightMatch(volTitle || "章節列表", searchQuery)}
@@ -256,33 +257,43 @@ function CatalogContent() {
                 : <span style={{ fontSize: 10, color: "var(--text-dim)", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 6px", whiteSpace: "nowrap", flexShrink: 0, marginRight: isLast ? 6 : 0 }}>
                     {volTitle || "章節列表"}
                   </span>;
-              return (
-                <Link
-                  key={ch.url}
-                  id={`ch-${ch.url}`}
-                  href={`/read?url=${encodeURIComponent(ch.url)}&catalog=${encodeURIComponent(catalogUrl)}`}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "space-between",
-                    padding: "9px 8px", borderRadius: 7, gap: 10,
-                    transition: "background .12s",
-                    background: isLast ? "rgba(200,169,110,.06)" : "",
-                    border: isLast ? "1px solid rgba(200,169,110,.18)" : "1px solid transparent",
-                  }}
-                  onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
-                  onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
-                >
+              const srStyle: React.CSSProperties = {
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "9px 8px", borderRadius: 7, gap: 10,
+                transition: "background .12s",
+                background: isLast ? "rgba(200,169,110,.06)" : "",
+                border: isLast ? "1px solid rgba(200,169,110,.18)" : "1px solid transparent",
+                opacity: isLocked ? 0.45 : 1, cursor: isLocked ? "default" : "pointer",
+              };
+              const srInner = (
+                <>
                   <span style={{ fontSize: 14, color: isVisited && !isLast ? "var(--text-muted)" : "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {highlightMatch(ch.title, searchQuery)}
                   </span>
                   {volLabel}
-                  {isLast ? (
+                  {isLocked ? (
+                    <span style={{ fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>🔒</span>
+                  ) : isLast ? (
                     <span style={{ fontSize: 10, fontWeight: 700, background: "var(--accent)", color: "#0a0a0d", padding: "2px 7px", borderRadius: 3, whiteSpace: "nowrap", flexShrink: 0 }}>
                       上次看到
                     </span>
                   ) : (
                     <span style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: isVisited ? "var(--border)" : "var(--accent)", display: "inline-block" }} />
                   )}
-                </Link>
+                </>
+              );
+              return isLocked ? (
+                <div key={ch.title} id={`ch-locked-${ch.title}`} style={srStyle}>{srInner}</div>
+              ) : (
+                <Link
+                  key={ch.url}
+                  id={`ch-${ch.url}`}
+                  prefetch={false}
+                  href={`/read?url=${encodeURIComponent(ch.url!)}&catalog=${encodeURIComponent(catalogUrl)}`}
+                  style={srStyle}
+                  onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
+                  onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
+                >{srInner}</Link>
               );
             })
           )
@@ -322,36 +333,48 @@ function CatalogContent() {
 
                   {/* Chapter list */}
                   <div style={{ flex: 1, minWidth: 0 }}>
-                     {chaptersToShow.map((ch) => {
+                     {chaptersToShow.map((ch, ci) => {
                        const isLast = !!ch.url && ch.url === lastChapterUrl;
-                       const isVisited = !!visitedChapters[ch.url];
-
-                       return (
-                         <Link
-                           key={ch.url}
-                           id={`ch-${ch.url}`}
-                           href={`/read?url=${encodeURIComponent(ch.url)}&catalog=${encodeURIComponent(catalogUrl)}`}
-                           style={{
-                             display: "flex", alignItems: "center", justifyContent: "space-between",
-                             padding: "9px 8px", borderRadius: 7, gap: 10,
-                             transition: "background .12s",
-                             background: isLast ? "rgba(200,169,110,.06)" : "",
-                             border: isLast ? "1px solid rgba(200,169,110,.18)" : "1px solid transparent",
-                           }}
-                           onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
-                           onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
-                         >
+                       const isVisited = !!ch.url && !!visitedChapters[ch.url];
+                       const isLocked = !ch.url;
+                       const chKey = ch.url || `locked-${ci}`;
+                       const chStyle: React.CSSProperties = {
+                         display: "flex", alignItems: "center", justifyContent: "space-between",
+                         padding: "9px 8px", borderRadius: 7, gap: 10,
+                         transition: "background .12s",
+                         background: isLast ? "rgba(200,169,110,.06)" : "",
+                         border: isLast ? "1px solid rgba(200,169,110,.18)" : "1px solid transparent",
+                         opacity: isLocked ? 0.45 : 1,
+                         cursor: isLocked ? "default" : "pointer",
+                       };
+                       const inner = (
+                         <>
                            <span style={{ fontSize: 14, color: isVisited && !isLast ? "var(--text-muted)" : "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                              {ch.title}
                            </span>
-                           {isLast ? (
+                           {isLocked ? (
+                             <span style={{ fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>🔒</span>
+                           ) : isLast ? (
                              <span style={{ fontSize: 10, fontWeight: 700, background: "var(--accent)", color: "#0a0a0d", padding: "2px 7px", borderRadius: 3, whiteSpace: "nowrap", flexShrink: 0 }}>
                                上次看到
                              </span>
                            ) : (
                              <span style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: isVisited ? "var(--border)" : "var(--accent)", display: "inline-block" }} />
                            )}
-                         </Link>
+                         </>
+                       );
+                       return isLocked ? (
+                         <div key={chKey} id={`ch-${chKey}`} style={chStyle}>{inner}</div>
+                       ) : (
+                         <Link
+                           key={chKey}
+                           id={`ch-${chKey}`}
+                           prefetch={false}
+                           href={`/read?url=${encodeURIComponent(ch.url!)}&catalog=${encodeURIComponent(catalogUrl)}`}
+                           style={chStyle}
+                           onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
+                           onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
+                         >{inner}</Link>
                        );
                      })}
                   </div>

@@ -91,7 +91,7 @@ export function markChapterVisited(
 
 const CATALOG_CACHE_KEY = "linovelib-catalog-cache";
 
-export type CatalogChapter = { title: string; url: string };
+export type CatalogChapter = { title: string; url: string | null };
 export type CatalogVolumeGroup = { volTitle: string; coverUrl: string; chapters: CatalogChapter[] };
 export type CatalogCache = {
   title: string;

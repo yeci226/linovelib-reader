@@ -1,29 +1,24 @@
-import { NextRequest, NextResponse } from "next/server";
-import * as cheerio from "cheerio";
-import type { CheerioAPI } from "cheerio";
-import { cfFetchHtmlEx } from "@/lib/cf-fetch";
-import { readCache, writeCache } from "@/lib/cache";
+/**
+ * Client-side chapter parser — mirrors the logic in app/api/chapter/route.ts.
+ *
+ * Uses the browser's native DOMParser (no cheerio / Node.js deps) so it can
+ * run entirely in the browser when the Next.js API is unavailable.
+ *
+ * Ported from bili_novel_packer (Dart) by Montaro2017
+ * https://github.com/Montaro2017/bili_novel_packer
+ */
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+import { restoreChars } from "@/lib/linovelib-charmap";
 
-// 章節內容永久快取（linovelib 已發布章節不會變）
-const CHAPTER_TTL_MS: number | null = null;
-
-type ChapterPageResult = {
+export type ChapterPageResult = {
   title: string;
   content: string;
-  /** URL of the next sub-page of THIS chapter (null if last sub-page). */
   nextPageUrl: string | null;
-  /** URL of the next chapter (only present on last sub-page). */
   nextChapterUrl: string | null;
-  /** URL of the previous chapter (only present on first sub-page). */
   prevChapterUrl: string | null;
 };
 
-// ─── ChapterLog (paragraph-shuffle) logic ───────────────────────────────────
-// Ported from bili_novel_packer (Dart) by Montaro2017
-// https://github.com/Montaro2017/bili_novel_packer
+// ─── ChapterLog (paragraph-shuffle) logic ────────────────────────────────────
 
 interface ChapterLogParams {
   fixedLength: number;
@@ -43,7 +38,7 @@ const FALLBACK_PARAMS: ChapterLogParams = {
   mod: 233280,
 };
 
-/** Simple integer expression evaluator: handles +,-,*,//,%,^,<<,>> and hex literals */
+/** Simple integer expression evaluator: handles +,-,*,/,%,^,<<,>> and hex literals */
 function evalIntExpr(expr: string): number | null {
   try {
     return new _ExprParser(expr.trim()).parse();
@@ -217,14 +212,12 @@ function tryParsePlain(js: string): ChapterLogParams | null {
   return { fixedLength, seedMultiplier: multiplier, seedOffset: offset, a: oneV - c, c, mod };
 }
 
-/** Obfuscated chapterlog.js patterns (ported from bili_novel_packer Dart) */
 const OBFUSCATED_SEED_RE =
   /var\s+[_$a-zA-Z0-9]+\s*=\s*[^;]*?Number\s*\(\s*[_$a-zA-Z0-9]+\s*\)\s*,\s*([^,)]+?)\s*\)\s*,\s*([^,)]+?)\s*\)\s*,/g;
 const OBFUSCATED_LCG_RE =
   /([_$a-zA-Z0-9]+)\s*=\s*[^;]*?\(\s*\1\s*,\s*([^,)]+?)\s*\)\s*,\s*([^,)]+?)\s*\)\s*,\s*([^;)]+?)\s*\)\s*;/g;
 
 function tryParseObfuscated(js: string): ChapterLogParams | null {
-  // --- seed ---
   let seedMultiplier: number | null = null;
   let seedOffset: number | null = null;
   OBFUSCATED_SEED_RE.lastIndex = 0;
@@ -239,7 +232,6 @@ function tryParseObfuscated(js: string): ChapterLogParams | null {
   }
   if (seedMultiplier == null || seedOffset == null) return null;
 
-  // --- lcg ---
   let lcgA: number | null = null, lcgC: number | null = null, lcgMod: number | null = null;
   OBFUSCATED_LCG_RE.lastIndex = 0;
   for (let m = OBFUSCATED_LCG_RE.exec(js); m; m = OBFUSCATED_LCG_RE.exec(js)) {
@@ -263,7 +255,7 @@ function tryParseObfuscated(js: string): ChapterLogParams | null {
   };
 }
 
-function parseChapterLog(js: string): ChapterLogParams {
+export function parseChapterLog(js: string): ChapterLogParams {
   return tryParsePlain(js) ?? tryParseObfuscated(js) ?? FALLBACK_PARAMS;
 }
 
@@ -278,34 +270,29 @@ function shuffleArr(arr: number[], params: ChapterLogParams, seed: number): numb
 }
 
 /**
- * Reorder paragraphs in #acontent to correct reading order.
- * Also removes fake `<p>` elements with auto-generated class names like `a1234`.
+ * Reorder paragraphs in the content element to correct reading order.
+ * Uses browser native DOM — no cheerio dependency.
  */
-function applyParagraphShuffle(
-  $: CheerioAPI,
-  contentEl: ReturnType<CheerioAPI>,
+function applyParagraphShuffleDom(
+  contentEl: Element,
   chapterId: number,
   params: ChapterLogParams,
 ): void {
-  // Step 1: Remove non-content elements — exactly as bili_novel_packer does before shuffling
-  contentEl.find("div, ins, figure, fig, br, script, .tp, .bd").remove();
+  // Remove non-content elements
+  contentEl.querySelectorAll("div, ins, figure, fig, br, script, .tp, .bd").forEach(el => el.remove());
   // Remove fake paragraphs with auto-generated class names like `a1234`
-  contentEl.find("p").each((_, el) => {
-    const cls = $(el).attr("class") ?? "";
-    if (/^[a-z]\d{4}$/.test(cls.trim())) $(el).remove();
+  contentEl.querySelectorAll("p").forEach(el => {
+    const cls = el.getAttribute("class") ?? "";
+    if (/^[a-z]\d{4}$/.test(cls.trim())) el.remove();
   });
 
-  // Collect non-empty <p> elements in DOM order
-  const pEls = contentEl.find("p").toArray().filter((el) => $(el).text().trim() !== "");
+  const pEls = Array.from(contentEl.querySelectorAll("p")).filter(
+    el => (el.textContent?.trim() ?? "") !== ""
+  );
   if (pEls.length === 0) return;
 
   const n = pEls.length;
   const seed = chapterId * params.seedMultiplier + params.seedOffset;
-
-  console.log("[shuffle] n:", n, "chapterId:", chapterId, "seed:", seed, "fixedLength:", params.fixedLength);
-  console.log("[shuffle] RAW[0]:", $(pEls[0]).text().trim().slice(0, 60));
-  console.log("[shuffle] RAW[1]:", $(pEls[1]).text().trim().slice(0, 60));
-  console.log("[shuffle] RAW[2]:", $(pEls[2]).text().trim().slice(0, 60));
 
   const fixed: number[] = [], shuffled: number[] = [];
   for (let i = 0; i < n; i++) {
@@ -320,152 +307,86 @@ function applyParagraphShuffle(
     indices = [...fixed];
   }
 
-  console.log("[shuffle] indices[0..4]:", indices.slice(0, 5));
-
-  // mapped[indices[i]] = pEls[i]  →  display position indices[i] gets paragraph i
-  const mapped = new Array<ReturnType<CheerioAPI>>(n);
+  // mapped[indices[i]] = pEls[i] → display position indices[i] gets paragraph i
+  const mapped = new Array<Element>(n);
   for (let i = 0; i < n; i++) {
-    mapped[indices[i]] = $(pEls[i]).clone();
+    mapped[indices[i]] = pEls[i].cloneNode(true) as Element;
   }
 
   // Replace p elements in DOM order with mapped[0], mapped[1], ...
-  let replacedIndex = 0;
-  contentEl.find("p").each((_, el) => {
-    if ($(el).text().trim() === "") return;
-    $(el).replaceWith(mapped[replacedIndex++]);
+  let k = 0;
+  Array.from(contentEl.querySelectorAll("p")).forEach(el => {
+    if ((el.textContent?.trim() ?? "") === "") return;
+    el.replaceWith(mapped[k++]);
   });
-
-  // Log after-shuffle first 3 paragraphs
-  const afterEls = contentEl.find("p").toArray().filter(el => $(el).text().trim() !== "");
-  console.log("[shuffle] AFTER[0]:", $(afterEls[0]).text().trim().slice(0, 60));
-  console.log("[shuffle] AFTER[1]:", $(afterEls[1]).text().trim().slice(0, 60));
-  console.log("[shuffle] AFTER[2]:", $(afterEls[2]).text().trim().slice(0, 60));
 }
 
-/** Rewrite any bilinovel/CN URL to tw.linovelib.com */
+/** Rewrite TW/CN URLs back to tw.linovelib.com for the frontend */
 function toLinovelib(url: string): string {
   return url
     .replace("www.bilinovel.com", "tw.linovelib.com")
     .replace("cn.linovelib.com", "tw.linovelib.com");
 }
 
-// ─── Page extraction ─────────────────────────────────────────────────────────
-
-async function extractPage(
+/**
+ * Parse raw chapter HTML entirely in the browser.
+ *
+ * @param html          Raw HTML of the chapter page
+ * @param currentUrl    The canonical URL of this page (used for relative-URL resolution)
+ * @param chapterLogJs  Contents of the corresponding chapterlog.js (null → use fallback params)
+ */
+export function parseChapterHtml(
   html: string,
   currentUrl: string,
-  skipShuffle = false,
-): Promise<{ title: string; content: string; nextPageUrl: string | null; nextChapterUrl: string | null; prevChapterUrl: string | null }> {
-  const $ = cheerio.load(html);
+  chapterLogJs: string | null,
+): ChapterPageResult {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
 
-  // Extract chapterlog.js URL BEFORE removing scripts
-  let chapterLogUrl: string | null = null;
-  $("script[src]").each((_, el) => {
-    const src = $(el).attr("src") ?? "";
-    if (src.includes("chapterlog.js")) {
-      chapterLogUrl = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
-    }
-  });
-
-  // Extract chapterId from inline script (same as bili_novel_packer)
+  // Extract chapterId from inline script or URL path
   const chapterIdMatch =
     /chapterid['":\s]+['"]?(\d+)['"]?/i.exec(html) ??
     /\/(\d+)(?:_\d+)?\.html/.exec(currentUrl);
   const chapterId = chapterIdMatch ? parseInt(chapterIdMatch[1], 10) : 0;
-  console.log("[chapter] url:", currentUrl, "chapterId:", chapterId, "chapterLogUrl:", chapterLogUrl);
 
-  $("script, style, ins, iframe, .ads, #ads").remove();
+  // Remove junk
+  doc.querySelectorAll("script, style, ins, iframe, .ads, #ads").forEach(el => el.remove());
 
-  const title = $("h1").first().text().trim() || "";
+  const title = doc.querySelector("h1")?.textContent?.trim() ?? "";
 
-  // Fetch and parse chapterlog.js (plain fetch — it's a static JS asset, no CF)
-  let clParams = FALLBACK_PARAMS;
-  if (chapterLogUrl) {
-    try {
-      const jsRes = await fetch(chapterLogUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-          "Referer": currentUrl,
-        },
-      });
-      if (jsRes.ok) {
-        const jsText = await jsRes.text();
-        clParams = parseChapterLog(jsText);
-        console.log("[chapterlog] params:", clParams);
-      }
-    } catch (e) {
-      console.warn("[chapterlog] failed to fetch/parse, using fallback params:", e);
-    }
-  } else {
-    console.warn("[chapterlog] no chapterlog.js found in page, using fallback params");
-  }
+  const clParams = chapterLogJs ? parseChapterLog(chapterLogJs) : FALLBACK_PARAMS;
 
-  // #acontent = 手機版；其餘為電腦版/備援
-  const contentEl = $("#acontent, #mlfy_main_text, .read-content, .chapter-content, #TextContent").first();
+  const contentEl = doc.querySelector(
+    "#acontent, #mlfy_main_text, .read-content, .chapter-content, #TextContent"
+  );
 
-  if (contentEl.length && chapterId > 0) {
-    if (skipShuffle) {
-      console.log("[chapter] skipping applyParagraphShuffle — HTML already rendered by browser");
-    } else {
-      applyParagraphShuffle($, contentEl, chapterId, clParams);
-    }
+  if (contentEl && chapterId > 0) {
+    applyParagraphShuffleDom(contentEl, chapterId, clParams);
   }
 
   let content = "";
-  if (contentEl.length) {
-    // When skipShuffle (Playwright-rendered), figure/div elements were NOT stripped
-    // by applyParagraphShuffle, so strip ad/noise elements here too.
-    if (skipShuffle) {
-      contentEl.find("div, ins, script, .tp, .bd").remove();
-      contentEl.find("p").each((_, el) => {
-        const cls = $(el).attr("class") ?? "";
-        if (/^[a-z]\d{4}$/.test(cls.trim())) $(el).remove();
-      });
-    }
-
-    contentEl.find("p, figure").each((_, el) => {
-      const tag = (el as { name?: string }).name ?? "";
-
-      // <figure> or <p> containing only an <img>
-      const imgEl = $(el).find("img").first();
-      if (imgEl.length) {
-        const src =
-          imgEl.attr("src") ??
-          imgEl.attr("data-src") ??
-          imgEl.attr("data-original") ??
-          "";
-        if (src && !src.startsWith("data:")) {
-          const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
-          content += `[IMG:${abs}]\n\n`;
-          return;
-        }
-      }
-
-      // Skip <figure> without usable <img>
-      if (tag === "figure") return;
-
-      // Plain text paragraph
-      const text = $(el).text().trim();
+  if (contentEl) {
+    contentEl.querySelectorAll("p").forEach(el => {
+      const text = restoreChars(el.textContent?.trim() ?? "");
       if (!text) return;
       content += text + "\n\n";
     });
   }
 
-  // Extract url_previous / url_next from inline JS — same as bili_novel_packer
+  // Navigation: extract url_previous / url_next from inline JS
   const baseUrl = new URL(currentUrl);
   const urlNavMatch = /url_previous:'(.*?)',url_next:'(.*?)'/.exec(html);
   const rawPrevUrl = urlNavMatch?.[1] ?? null;
   const rawNextUrl = urlNavMatch?.[2] ?? null;
 
-  const resolve = (raw: string | null) => {
+  const resolve = (raw: string | null): string | null => {
     if (!raw) return null;
     const full = raw.startsWith("http") ? raw : baseUrl.origin + raw;
     return toLinovelib(full);
   };
 
-  // Determine whether next/prev links are same-chapter pages or chapter boundaries
-  const prevLinkText = $("#footlink a:first-child").text().trim();
-  const nextLinkText = $("#footlink a:last-child").text().trim();
+  const prevLinkText = doc.querySelector("#footlink a:first-child")?.textContent?.trim() ?? "";
+  const nextLinkText = doc.querySelector("#footlink a:last-child")?.textContent?.trim() ?? "";
   const isPrevPage = prevLinkText === "上一页" || prevLinkText === "上一頁";
   const isNextPage = nextLinkText === "下一页" || nextLinkText === "下一頁";
 
@@ -476,38 +397,4 @@ async function extractPage(
     nextChapterUrl: isNextPage ? null : resolve(rawNextUrl),
     prevChapterUrl: isPrevPage ? null : resolve(rawPrevUrl),
   };
-}
-
-export async function GET(req: NextRequest) {
-  const rawUrl = req.nextUrl.searchParams.get("url");
-  const force = req.nextUrl.searchParams.get("refresh") === "1";
-  if (!rawUrl) return NextResponse.json({ error: "Missing url" }, { status: 400 });
-
-  // Normalise to tw.linovelib.com
-  const url = rawUrl
-    .replace("www.bilinovel.com", "tw.linovelib.com")
-    .replace("cn.linovelib.com", "tw.linovelib.com");
-
-  try {
-    if (!force) {
-      const cached = await readCache<ChapterPageResult>("chapter-page", url);
-      if (cached) return NextResponse.json({ ...cached, cached: true });
-    }
-
-    const { html, renderedByBrowser }: { html: string; renderedByBrowser: boolean } = await cfFetchHtmlEx(url);
-    const { title, content, nextPageUrl, nextChapterUrl, prevChapterUrl } =
-      await extractPage(html, url, renderedByBrowser);
-
-    const result: ChapterPageResult = {
-      title,
-      content,
-      nextPageUrl,
-      nextChapterUrl,
-      prevChapterUrl,
-    };
-    await writeCache("chapter-page", url, result, CHAPTER_TTL_MS);
-    return NextResponse.json({ ...result, cached: false });
-  } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
-  }
 }

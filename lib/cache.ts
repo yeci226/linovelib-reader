@@ -9,8 +9,13 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const CACHE_DIR = join(process.cwd(), ".cache");
+// On Vercel/serverless the working dir is read-only; only /tmp is writable.
+// Locally use ./.cache so dev caches survive restarts.
+const CACHE_DIR = process.env.VERCEL
+  ? join(tmpdir(), "linovelib-cache")
+  : join(process.cwd(), ".cache");
 
 type Entry<T> = { savedAt: number; ttlMs: number | null; data: T };
 

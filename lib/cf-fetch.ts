@@ -93,6 +93,45 @@ function getCachedJar(host: string): CookieJarEntry | null {
  *  3. Direct fetch with cached CF cookies
  *  4. Direct fetch fallback
  */
+export type CfFetchResult = { html: string; renderedByBrowser: boolean };
+
+export async function cfFetchHtmlEx(url: string): Promise<CfFetchResult> {
+  // 1. Playwright backend — returns fully rendered DOM (site JS has already unshuffled paragraphs)
+  if (PLAYWRIGHT_BACKEND_URL) {
+    const html = await fetchViaPlaywrightBackend(url);
+    return { html, renderedByBrowser: true };
+  }
+
+  const host = new URL(url).host;
+  const cached = getCachedJar(host);
+
+  if (cached) {
+    const direct = await fetch(url, {
+      headers: { ...DEFAULT_HEADERS, "User-Agent": cached.userAgent, Cookie: `night=0; ${cached.cookieHeader}` },
+    });
+    if (direct.ok && !isCfChallenge(direct)) return { html: await direct.text(), renderedByBrowser: false };
+    jar.delete(host);
+  }
+
+  await sleep(200 + Math.floor(Math.random() * 300));
+
+  // 2. FlareSolverr — also renders via browser
+  try {
+    const sol = await solveWithFlareSolverr(url);
+    if (!sol) throw new Error("no solution");
+    cacheCookies(host, sol);
+    return { html: sol.response, renderedByBrowser: true };
+  } catch (e) {
+    const msg = String(e);
+    if (msg.includes("ECONNREFUSED") || msg.includes("fetch failed") || msg.includes("500")) {
+      console.warn("[cf-fetch] FlareSolverr unavailable, falling back to direct fetch:", msg);
+      const res = await fetch(url, { headers: DEFAULT_HEADERS });
+      return { html: await res.text(), renderedByBrowser: false };
+    }
+    throw e;
+  }
+}
+
 export async function cfFetchHtml(url: string): Promise<string> {
   // 1. Playwright backend
   if (PLAYWRIGHT_BACKEND_URL) {
