@@ -22,7 +22,7 @@ const CONCURRENCY = Number(process.env.CONCURRENCY ?? 2);
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS ?? 30 * 60 * 1000);
 const CACHE_MAX = Number(process.env.CACHE_MAX ?? 200);
 const NAV_TIMEOUT_MS = 45_000;
-const SETTLE_MS = Number(process.env.SETTLE_MS ?? 6000); // post-load delay for JS to remove decoy paragraphs
+const SETTLE_MS = Number(process.env.SETTLE_MS ?? 2500); // post-load delay for JS to remove decoy paragraphs
 
 if (!AUTH_TOKEN) {
   console.error("FATAL: AUTH_TOKEN env var is required");

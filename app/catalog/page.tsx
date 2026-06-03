@@ -26,12 +26,17 @@ function CatalogContent() {
   const router = useRouter();
   const catalogUrl = params.get("url") || "";
 
-  const [title, setTitle] = useState("");
-  const [coverUrl, setCoverUrl] = useState("");
-  const [groups, setGroups] = useState<VolumeGroup[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Read localStorage synchronously on first render — this component is fully
+  // client-side (inside <Suspense>), so there is no SSR/hydration mismatch.
+  const initialCache = catalogUrl ? getCatalogCache(catalogUrl) : null;
+  const initialEntry = catalogUrl ? getEntryFor(catalogUrl) : null;
+
+  const [title, setTitle] = useState(initialCache?.title ?? "");
+  const [coverUrl, setCoverUrl] = useState(initialCache?.coverUrl ?? "");
+  const [groups, setGroups] = useState<VolumeGroup[]>((initialCache?.groups as VolumeGroup[]) ?? []);
+  const [loading, setLoading] = useState(!initialCache);
   const [error, setError] = useState("");
-  const [entry, setEntry] = useState<HistoryEntry | null>(null);
+  const [entry, setEntry] = useState<HistoryEntry | null>(initialEntry);
   const [sortDesc, setSortDesc] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const [searchQuery, setSearchQuery] = useState("");
@@ -83,25 +88,19 @@ function CatalogContent() {
     const existing = getEntryFor(catalogUrl);
     if (existing) setEntry(existing);
 
-    // ── Cache-first: if we have cached catalog data, show it immediately ──
     const cached = getCatalogCache(catalogUrl);
     if (cached) {
-      setTitle(cached.title);
-      setCoverUrl(cached.coverUrl);
-      setGroups(cached.groups);
-      setLoading(false);
-      // Background-refresh only if cache is older than 1 day
+      // Already shown synchronously — just background-refresh if stale
       const ONE_DAY = 24 * 60 * 60 * 1000;
       if (Date.now() - cached.cachedAt > ONE_DAY) {
         fetchCatalog(catalogUrl)
           .then(parsed => applyParsed(parsed, catalogUrl))
-          .catch(() => { /* ignore background refresh errors */ });
+          .catch(() => {});
       }
       return;
     }
 
-    // ── No cache: show loading spinner and wait ──
-    setLoading(true);
+    // No cache — fetch now (loading spinner already showing)
     fetchCatalog(catalogUrl)
       .then(parsed => applyParsed(parsed, catalogUrl))
       .catch(e => setError(String(e)))

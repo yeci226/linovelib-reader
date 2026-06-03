@@ -115,10 +115,13 @@ function ReadContent() {
 
   const READ_WIDTHS = [660, 800, 960, 1200] as const;
 
-  const [title, setTitle] = useState("");
-  const [subtitle, setSubtitle] = useState("");
-  const [nodes, setNodes] = useState<ContentNode[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Read chapter cache synchronously — this component is fully client-side.
+  const initialCache = chapterUrl ? getChapterCache(chapterUrl) : null;
+
+  const [title, setTitle] = useState(initialCache?.title ?? "");
+  const [subtitle, setSubtitle] = useState(initialCache?.subtitle ?? "");
+  const [nodes, setNodes] = useState<ContentNode[]>(initialCache?.nodes ?? []);
+  const [loading, setLoading] = useState(!initialCache);
   const [error, setError] = useState("");
   const [readWidthIdx, setReadWidthIdx] = useState<number>(() => {
     if (typeof window === "undefined") return 0;
@@ -226,22 +229,25 @@ function ReadContent() {
     if (!chapterUrl) return;
     let cancelled = false;
 
-    setLoading(true);
+    // Check cache first — may already be shown from synchronous init
+    const cached = getChapterCache(chapterUrl);
+
+    if (!cached) {
+      setLoading(true);
+    }
     setLoadingMore(false);
     loadingChapterRef.current = chapterUrl;
-    setNodes([]);
-    setSubtitle("");
+    if (!cached) setNodes([]);
+    setSubtitle(cached?.subtitle ?? "");
     setError("");
-    setNextUrl(null);
+    setNextUrl(cached ? cached.nextChapterUrl : null);
     setPrevUrl(null);
-    setNextTitle("");
+    setNextTitle(cached?.nextChapterUrl ? getCachedChapterTitle(cached.nextChapterUrl) : "");
     setPrevTitle("");
-    setPageCount(0);
+    setPageCount(cached ? 1 : 0);
     window.scrollTo(0, 0);
 
     async function loadInitial() {
-      // ── Cache-first: full chapter already cached ──
-      const cached = getChapterCache(chapterUrl);
       if (cached) {
         if (cancelled) return;
         setTitle(cached.title);
@@ -252,7 +258,6 @@ function ReadContent() {
         setNextUrl(cached.nextChapterUrl);
         setNextTitle(cached.nextChapterUrl ? getCachedChapterTitle(cached.nextChapterUrl) : "");
         setPageCount(1);
-        // Warm next chapter in background
         if (cached.nextChapterUrl) {
           fetchChapterPage(cached.nextChapterUrl).catch(() => {});
         }
