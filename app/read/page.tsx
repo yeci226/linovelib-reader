@@ -12,6 +12,9 @@ import {
   getChapterCache,
   saveChapterCache,
   Bookmark,
+  loadSettings,
+  saveSettings,
+  ReaderSettings,
 } from "@/lib/history";
 import { parseChapterHtml } from "@/lib/chapter-parser";
 
@@ -126,7 +129,7 @@ function contentToNodes(content: string): ContentNode[] {
     });
 }
 
-type Theme = "dark" | "sepia" | "light";
+type Theme = "dark" | "sepia" | "light" | "amoled";
 type FontFamily = "sans" | "serif";
 
 const FONT_MAP: Record<FontFamily, string> = {
@@ -161,8 +164,8 @@ function ReadContent() {
   const cycleWidth = () => setReadWidthIdx(i => (i + 1) % READ_WIDTHS.length);
   const [fontSize, setFontSize] = useState<number>(() => {
     if (typeof window === "undefined") return 17;
-    const v = parseInt(localStorage.getItem("linovelib-fontsize") ?? "17", 10);
-    return isNaN(v) ? 17 : Math.min(26, Math.max(14, v));
+    const settings = loadSettings();
+    return settings.fontSize || 17;
   });
   const [progress, setProgress] = useState(0);
   const [nextUrl, setNextUrl] = useState<string | null>(null);
@@ -177,7 +180,7 @@ function ReadContent() {
   // Theme
   const [theme, setTheme] = useState<Theme>(() => {
     if (typeof window === "undefined") return "dark";
-    return (localStorage.getItem("linovelib-theme") as Theme) ?? "dark";
+    return loadSettings().theme || "dark";
   });
 
   // Font family
@@ -187,7 +190,15 @@ function ReadContent() {
   });
 
   // Line height
-  const [lineHeightIdx, setLineHeightIdx] = useState(1); // default 1.95
+  const [lineHeightIdx, setLineHeightIdx] = useState(() => {
+    if (typeof window === "undefined") return 1;
+    const h = loadSettings().lineHeight;
+    const idx = LINE_HEIGHTS.indexOf(h as any);
+    return idx === -1 ? 1 : idx;
+  });
+
+  // Image Zoom
+  const [zoomedImg, setZoomedImg] = useState<string | null>(null);
 
   // Bookmarks
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
@@ -202,18 +213,17 @@ function ReadContent() {
     } else {
       document.documentElement.dataset.theme = theme;
     }
-    localStorage.setItem("linovelib-theme", theme);
   }, [theme]);
+
+  // Sync settings when they change
+  useEffect(() => {
+    saveSettings({ theme, fontSize, lineHeight: LINE_HEIGHTS[lineHeightIdx] });
+  }, [theme, fontSize, lineHeightIdx]);
 
   // Persist font family
   useEffect(() => {
     localStorage.setItem("linovelib-font", fontFamily);
   }, [fontFamily]);
-
-  // Persist font size
-  useEffect(() => {
-    localStorage.setItem("linovelib-fontsize", String(fontSize));
-  }, [fontSize]);
 
   // Persist read width
   useEffect(() => {
@@ -412,10 +422,10 @@ function ReadContent() {
   };
 
   const cycleTheme = () => {
-    setTheme(t => t === "dark" ? "sepia" : t === "sepia" ? "light" : "dark");
+    setTheme(t => t === "dark" ? "sepia" : t === "sepia" ? "light" : t === "light" ? "amoled" : "dark");
   };
 
-  const themeIcon = theme === "dark" ? "☀" : theme === "sepia" ? "📜" : "🌙";
+  const themeIcon = theme === "dark" ? "☀" : theme === "sepia" ? "📜" : theme === "light" ? "🌙" : "⚫";
 
   const cycleFontFamily = () => {
     setFontFamily(f => f === "sans" ? "serif" : "sans");
@@ -535,7 +545,8 @@ function ReadContent() {
                     src={`/api/image?url=${encodeURIComponent(node.src)}`}
                     alt={node.alt}
                     loading="lazy"
-                    style={{ maxWidth: "100%", maxHeight: 480, objectFit: "contain", borderRadius: 6, border: "1px solid var(--border)" }}
+                    style={{ maxWidth: "100%", maxHeight: 480, objectFit: "contain", borderRadius: 6, border: "1px solid var(--border)", cursor: "zoom-in" }}
+                    onClick={() => setZoomedImg(node.src)}
                   />
                 </div>
               )
@@ -640,6 +651,20 @@ function ReadContent() {
           )}
         </button>
       </div>
+
+      {/* Image Zoom Modal */}
+      {zoomedImg && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.9)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out" }}
+          onClick={() => setZoomedImg(null)}
+        >
+          <img
+            src={`/api/image?url=${encodeURIComponent(zoomedImg)}`}
+            alt="Zoomed"
+            style={{ maxWidth: "100vw", maxHeight: "100vh", objectFit: "contain", userSelect: "none" }}
+          />
+        </div>
+      )}
     </main>
   );
 }

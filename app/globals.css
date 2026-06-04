@@ -41,6 +41,19 @@
   --accent-dim:  #c8a96e;
 }
 
+/* ── AMOLED theme (純黑) ── */
+[data-theme="amoled"] {
+  --bg:          #000000;
+  --surface:     #080808;
+  --surface2:    #121212;
+  --border:      #1a1a1a;
+  --text:        #cccccc;
+  --text-muted:  #666666;
+  --text-dim:    #444444;
+  --accent:      #b5965a;
+  --accent-dim:  #5c4a2c;
+}
+
 html { background: var(--bg); }
 html, body { transition: background .2s, color .2s; }
 body {

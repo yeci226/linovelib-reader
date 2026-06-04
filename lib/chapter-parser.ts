@@ -366,7 +366,23 @@ export function parseChapterHtml(
 
   let content = "";
   if (contentEl) {
-    contentEl.querySelectorAll("p").forEach(el => {
+    contentEl.querySelectorAll("p, figure, div, center").forEach(el => {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "img") return; // Handled within wrappers usually
+      
+      const imgEls = el.querySelectorAll("img");
+      if (imgEls.length > 0) {
+        imgEls.forEach(img => {
+          const src = img.getAttribute("src") || img.getAttribute("data-src") || img.getAttribute("data-original") || "";
+          if (src && !src.startsWith("data:")) {
+            const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
+            content += `[IMG:${abs}]\n\n`;
+          }
+        });
+      }
+      
+      if (tag === "figure" || tag === "center") return;
+      
       const text = restoreChars(el.textContent?.trim() ?? "");
       if (!text) return;
       content += text + "\n\n";

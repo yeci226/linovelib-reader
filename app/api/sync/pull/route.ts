@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "";
 
@@ -8,19 +8,14 @@ export async function GET(req: NextRequest) {
   if (!BACKEND_URL) {
     return NextResponse.json({ error: "Backend not configured" }, { status: 500 });
   }
-
-  const q = req.nextUrl.searchParams.get("q")?.trim();
-  if (!q) return NextResponse.json({ error: "Missing q" }, { status: 400 });
-
+  
   try {
-    const res = await fetch(`${BACKEND_URL.replace(/\/$/, "")}/search?q=${encodeURIComponent(q)}`, {
+    const authHeader = req.headers.get("authorization") || "";
+    const res = await fetch(`${BACKEND_URL.replace(/\/$/, "")}/sync/pull`, {
       method: "GET",
-      // Include authorization token for the backend proxy
-      headers: {
-        "Authorization": `Bearer ${process.env.BACKEND_TOKEN || process.env.AUTH_TOKEN || ""}`
-      }
+      headers: { "Authorization": authHeader },
     });
-
+    
     const data = await res.json().catch(() => null);
     return NextResponse.json(data || {}, { status: res.status });
   } catch (err: any) {

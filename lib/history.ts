@@ -1,4 +1,6 @@
 // lib/history.ts
+import { triggerSyncPush } from "./sync";
+
 const STORAGE_KEY = "linovelib-history";
 const MAX_ENTRIES = 20;
 
@@ -26,9 +28,10 @@ function load(): HistoryEntry[] {
   }
 }
 
-function save(entries: HistoryEntry[]): void {
+export function save(entries: HistoryEntry[], skipSync = false): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  if (!skipSync) triggerSyncPush();
 }
 
 /** Returns all history entries, newest first. */
@@ -162,9 +165,10 @@ function loadBookmarks(): Bookmark[] {
   } catch { return []; }
 }
 
-function saveBookmarks(bms: Bookmark[]): void {
+export function saveBookmarks(bms: Bookmark[], skipSync = false): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(BOOKMARK_KEY, JSON.stringify(bms));
+  if (!skipSync) triggerSyncPush();
 }
 
 /** Add a bookmark at the current scroll position. Returns the new bookmark. */
@@ -188,6 +192,47 @@ export function getBookmarksForChapter(chapterUrl: string): Bookmark[] {
 /** Get all bookmarks, newest first. */
 export function getAllBookmarks(): Bookmark[] {
   return loadBookmarks();
+}
+
+// ---------------------------------------------------------------------------
+// Bookshelf
+// ---------------------------------------------------------------------------
+
+const BOOKSHELF_KEY = "linovelib-bookshelf";
+
+export type BookshelfEntry = {
+  catalogUrl: string;
+  novelTitle: string;
+  coverUrl: string;
+  totalChapters: number;
+  addedAt: number;
+};
+
+export function loadBookshelf(): BookshelfEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    return JSON.parse(localStorage.getItem(BOOKSHELF_KEY) ?? "[]") as BookshelfEntry[];
+  } catch { return []; }
+}
+
+export function saveBookshelf(entries: BookshelfEntry[], skipSync = false): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(BOOKSHELF_KEY, JSON.stringify(entries));
+  if (!skipSync) triggerSyncPush();
+}
+
+export function addToBookshelf(entry: Omit<BookshelfEntry, "addedAt">): void {
+  const all = loadBookshelf().filter(e => e.catalogUrl !== entry.catalogUrl);
+  saveBookshelf([{ ...entry, addedAt: Date.now() }, ...all]);
+}
+
+export function removeFromBookshelf(catalogUrl: string): void {
+  const all = loadBookshelf().filter(e => e.catalogUrl !== catalogUrl);
+  saveBookshelf(all);
+}
+
+export function isInBookshelf(catalogUrl: string): boolean {
+  return loadBookshelf().some(e => e.catalogUrl === catalogUrl);
 }
 
 // ---------------------------------------------------------------------------
@@ -234,4 +279,37 @@ export function saveChapterCache(chapterUrl: string, data: Omit<ChapterCache, "c
   } catch {
     // Quota exceeded — silently ignore
   }
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+const SETTINGS_KEY = "linovelib-settings";
+
+export type ReaderSettings = {
+  theme: "dark" | "sepia" | "light" | "amoled";
+  fontSize: number;
+  lineHeight: number;
+};
+
+export function loadSettings(): ReaderSettings {
+  if (typeof window === "undefined") return { theme: "dark", fontSize: 18, lineHeight: 1.8 };
+  try {
+    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "null");
+    if (!raw) return { theme: "dark", fontSize: 18, lineHeight: 1.8 };
+    return {
+      theme: raw.theme || "dark",
+      fontSize: raw.fontSize || 18,
+      lineHeight: raw.lineHeight || 1.8
+    };
+  } catch {
+    return { theme: "dark", fontSize: 18, lineHeight: 1.8 };
+  }
+}
+
+export function saveSettings(settings: ReaderSettings, skipSync = false): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  if (!skipSync) triggerSyncPush();
 }

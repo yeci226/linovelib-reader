@@ -17,12 +17,12 @@ export const metadata: Metadata = {
   title: "輕小說閱讀器",
   description: "嗶哩輕小說線上閱讀器",
   manifest: "/manifest.json",
-  themeColor: "#c8a96e",
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  themeColor: "#c8a96e",
 };
 
 export default function RootLayout({

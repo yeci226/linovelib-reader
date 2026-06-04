@@ -5,6 +5,7 @@ import { cfFetchHtmlEx } from "@/lib/cf-fetch";
 import { readCache, writeCache } from "@/lib/cache";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
 // 章節內容永久快取（linovelib 已發布章節不會變）
@@ -446,16 +447,17 @@ async function extractPage(
         return;
       }
 
-      // <figure> or <p> containing an <img>
-      if (tag === "p" || tag === "figure") {
-        const imgEl = $(el).find("img").first();
-        if (imgEl.length) {
-          const src = extractImgSrc(imgEl);
-          if (src && !src.startsWith("data:")) {
-            const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
-            content += `[IMG:${abs}]\n\n`;
-            return;
-          }
+      // <figure>, <p>, or <div> containing an <img>
+      if (tag === "p" || tag === "figure" || tag === "div") {
+        const imgEls = $(el).find("img");
+        if (imgEls.length) {
+          imgEls.each((_, img) => {
+            const src = extractImgSrc($(img));
+            if (src && !src.startsWith("data:")) {
+              const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
+              content += `[IMG:${abs}]\n\n`;
+            }
+          });
         }
         if (tag === "figure") return;
         const text = $(el).text().trim();
@@ -466,13 +468,15 @@ async function extractPage(
 
       // <center> may wrap an image
       if (tag === "center") {
-        const imgEl = $(el).find("img").first();
-        if (imgEl.length) {
-          const src = extractImgSrc(imgEl);
-          if (src && !src.startsWith("data:")) {
-            const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
-            content += `[IMG:${abs}]\n\n`;
-          }
+        const imgEls = $(el).find("img");
+        if (imgEls.length) {
+          imgEls.each((_, img) => {
+            const src = extractImgSrc($(img));
+            if (src && !src.startsWith("data:")) {
+              const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
+              content += `[IMG:${abs}]\n\n`;
+            }
+          });
         }
       }
     });

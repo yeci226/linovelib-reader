@@ -2,7 +2,8 @@
 import { useEffect, useState, Suspense, type ReactNode } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { getEntryFor, saveProgress, getCatalogCache, saveCatalogCache, type HistoryEntry } from "@/lib/history";
+import { getEntryFor, saveProgress, getCatalogCache, saveCatalogCache, type HistoryEntry, isInBookshelf, addToBookshelf, removeFromBookshelf } from "@/lib/history";
+import { ImagePlaceholderIcon, BookIcon } from "@/components/icons";
 
 interface Chapter { title: string; url: string | null }
 interface VolumeGroup {
@@ -40,6 +41,11 @@ function CatalogContent() {
   const [sortDesc, setSortDesc] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const [searchQuery, setSearchQuery] = useState("");
+  const [inBookshelf, setInBookshelf] = useState(false);
+
+  useEffect(() => {
+    if (catalogUrl) setInBookshelf(isInBookshelf(catalogUrl));
+  }, [catalogUrl]);
 
   const lastChapterUrl = entry?.lastChapterUrl ?? null;
   const lastChapterTitle = entry?.lastChapterTitle ?? "";
@@ -164,6 +170,21 @@ function CatalogContent() {
     );
   }
 
+  const handleBookshelfToggle = () => {
+    if (inBookshelf) {
+      removeFromBookshelf(catalogUrl);
+      setInBookshelf(false);
+    } else {
+      addToBookshelf({
+        catalogUrl,
+        novelTitle: title,
+        coverUrl,
+        totalChapters
+      });
+      setInBookshelf(true);
+    }
+  };
+
   return (
     <main style={{ minHeight: "100vh" }}>
       {/* Sticky header */}
@@ -176,14 +197,38 @@ function CatalogContent() {
             {coverUrl ? (
               <img src={`/api/image?url=${encodeURIComponent(coverUrl)}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             ) : (
-              <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, color: "var(--text-dim)" }}>📖</div>
+              <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)" }}>
+                <ImagePlaceholderIcon style={{ fontSize: 28 }} />
+              </div>
             )}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 17, fontWeight: 700, color: "var(--text)", lineHeight: 1.35, marginBottom: 6 }}>{title}</div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.7 }}>
-              共 {totalChapters} 章
-              {visitedCount > 0 && <> · 已看 {visitedCount} 章</>}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.7 }}>
+                共 {totalChapters} 章
+                {visitedCount > 0 && <> · 已看 {visitedCount} 章</>}
+              </div>
+              <button 
+                onClick={handleBookshelfToggle}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  background: inBookshelf ? "transparent" : "var(--accent)",
+                  color: inBookshelf ? "var(--text-muted)" : "#0a0a0d",
+                  border: inBookshelf ? "1px solid var(--border)" : "none",
+                  borderRadius: 4,
+                  padding: "4px 10px",
+                  fontSize: 12,
+                  fontWeight: inBookshelf ? 400 : 700,
+                  cursor: "pointer",
+                  transition: "all .15s"
+                }}
+              >
+                <BookIcon style={{ fontSize: 14 }} />
+                {inBookshelf ? "已在書架" : "加入書架"}
+              </button>
             </div>
           </div>
         </div>
