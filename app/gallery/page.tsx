@@ -12,7 +12,9 @@ type ImageEntry = {
   src: string;
 };
 
-export default function GalleryPage() {
+import { Suspense } from "react";
+
+function GalleryContent() {
   const searchParams = useSearchParams();
   const url = searchParams.get("url");
   const router = useRouter();
@@ -80,5 +82,13 @@ export default function GalleryPage() {
         </div>
       )}
     </main>
+  );
+}
+
+export default function GalleryPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <GalleryContent />
+    </Suspense>
   );
 }
