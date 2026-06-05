@@ -24,7 +24,8 @@ export async function GET(req: NextRequest) {
     for (const row of rows) {
       if (!row.data) continue;
       try {
-        const items = JSON.parse(row.data);
+        const parsed = JSON.parse(row.data);
+        const items = Array.isArray(parsed) ? parsed : parsed.items;
         if (Array.isArray(items)) {
           for (const item of items) {
             // Keep the first occurrence
