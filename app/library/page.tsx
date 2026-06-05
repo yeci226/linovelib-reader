@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronLeftIcon, ImagePlaceholderIcon } from "@/components/icons";
 
@@ -32,30 +32,6 @@ export default function LibraryPage() {
 
   const isInitialMount = useRef(true);
 
-  const displayedItems = useMemo(() => {
-    if (!searchQuery) return items;
-    const q = searchQuery.toLowerCase();
-    
-    const scored = items.map(item => {
-      const titleMatch = item.title && item.title.toLowerCase().includes(q) ? 1 : 0;
-      const authorMatch = item.author && item.author.toLowerCase().includes(q) ? 1 : 0;
-      const tagMatch = item.tags && item.tags.some(t => t.toLowerCase().includes(q)) ? 1 : 0;
-      
-      let score = 0;
-      if (titleMatch || authorMatch || tagMatch) {
-        if (searchType === "tag") {
-          score = tagMatch * 3 + authorMatch * 2 + titleMatch * 1;
-        } else {
-          score = titleMatch * 3 + authorMatch * 2 + tagMatch * 1;
-        }
-      }
-      return { item, score };
-    }).filter(x => x.score > 0);
-    
-    scored.sort((a, b) => b.score - a.score);
-    return scored.map(x => x.item);
-  }, [items, searchQuery, searchType]);
-
   useEffect(() => {
     let initialTab = tab;
     let initialPage = 1;
@@ -81,19 +57,19 @@ export default function LibraryPage() {
         sessionStorage.removeItem('libraryState');
       } catch (e) {}
     }
-    fetchData(initialTab, initialPage);
+    fetchData(initialTab, initialPage, initialQuery, initialType);
     isInitialMount.current = false;
   }, []);
 
   useEffect(() => {
     if (isInitialMount.current) return;
     setPage(1);
-    fetchData(tab, 1);
-  }, [tab]);
+    fetchData(tab, 1, searchQuery, searchType);
+  }, [tab, searchQuery, searchType]);
 
   useEffect(() => {
     if (isInitialMount.current) return;
-    fetchData(tab, page);
+    fetchData(tab, page, searchQuery, searchType);
   }, [page]);
 
   const handleNav = (url: string) => {
@@ -108,19 +84,21 @@ export default function LibraryPage() {
     router.push(`/catalog?url=${encodeURIComponent(url)}`);
   };
 
-  const fetchData = async (currentTab: string, p: number) => {
+  const fetchData = async (currentTab: string, p: number, query: string = "", type: "normal" | "tag" = "normal") => {
     setIsFetching(true);
     if (items.length === 0 || p === 1) setLoading(true);
     try {
       let endpoint = `/api/discover/${currentTab}?page=${p}`;
+      if (currentTab === "wenku" && query) {
+        endpoint = `/api/discover/search?q=${encodeURIComponent(query)}&type=${type}&page=${p}`;
+      }
       
       const res = await fetch(endpoint);
       if (res.ok) {
         const data = await res.json();
-        // Since we are filtering client-side, we always append
-        setItems(prev => p === 1 ? (data.items || []) : [...prev, ...(data.items || [])]);
+        setItems(data.items || []);
         setTotalPages(data.totalPages || 1);
-        setLoadedTab(currentTab as any);
+        setLoadedTab((currentTab === "wenku" && query) ? "search" : currentTab as any);
       }
     } catch (e) {
       console.error(e);
@@ -248,17 +226,17 @@ export default function LibraryPage() {
     if (loading) {
       return <div style={{ textAlign: "center", padding: "40px", color: "var(--text-muted)", fontSize: 14 }}>載入中...</div>;
     }
-    if (displayedItems.length === 0) {
+    if (items.length === 0) {
       return (
         <div style={{ textAlign: "center", padding: "40px", color: "var(--text-muted)", fontSize: 14 }}>
-          {searchQuery ? "在目前的載入範圍中找不到相符的結果。您可以捲動到底部載入更多小說！" : "沒有資料"}
+          {searchQuery ? "在本地快取中找不到相符的結果。請先瀏覽更多小說後再試。" : "沒有資料"}
         </div>
       );
     }
 
-    if (loadedTab === "top" && page === 1 && displayedItems.length >= 3) {
-      const top3 = displayedItems.slice(0, 3);
-      const rest = displayedItems.slice(3);
+    if (loadedTab === "top" && page === 1 && items.length >= 3) {
+      const top3 = items.slice(0, 3);
+      const rest = items.slice(3);
       return (
         <>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 20, maxWidth: 1200, margin: "0 auto 20px" }}>
