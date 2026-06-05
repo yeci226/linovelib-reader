@@ -31,6 +31,22 @@ export async function GET(req: NextRequest) {
   const page = parseInt(req.nextUrl.searchParams.get("page") || "1", 10);
   const force = req.nextUrl.searchParams.get("refresh") === "1";
   
+  const DISCOVER_BACKEND_URL = process.env.DISCOVER_BACKEND_URL || "";
+  if (DISCOVER_BACKEND_URL) {
+    try {
+      const targetUrl = `${DISCOVER_BACKEND_URL.replace(/\/$/, "")}/api/discover/wenku${req.nextUrl.search}`;
+      const proxyRes = await fetch(targetUrl, {
+        headers: { "Authorization": `Bearer ${process.env.AUTH_TOKEN || ""}` }
+      });
+      if (proxyRes.ok) {
+        const data = await proxyRes.json();
+        return NextResponse.json(data);
+      }
+    } catch (err) {
+      console.error("Proxy to discover backend failed:", err);
+    }
+  }
+
   const cacheKey = `wenku_page_${page}`;
 
   try {
