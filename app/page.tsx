@@ -52,9 +52,13 @@ export default function Home() {
   };
 
   const resumeReading = (entry: HistoryEntry) => {
-    router.push(
-      `/read?url=${encodeURIComponent(entry.lastChapterUrl)}&catalog=${encodeURIComponent(entry.catalogUrl)}`
-    );
+    if (entry.lastChapterUrl) {
+      router.push(
+        `/read?url=${encodeURIComponent(entry.lastChapterUrl)}&catalog=${encodeURIComponent(entry.catalogUrl)}&from=home`
+      );
+    } else {
+      router.push(`/catalog?url=${encodeURIComponent(entry.catalogUrl)}`);
+    }
   };
 
   const progressPct = (entry: HistoryEntry) =>

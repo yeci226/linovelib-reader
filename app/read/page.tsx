@@ -447,12 +447,16 @@ function ReadContent() {
   }, [chapterUrl, catalogUrl]);
 
   const goBack = () => {
-    if (catalogUrl) router.push(`/catalog?url=${encodeURIComponent(catalogUrl)}`);
-    else router.push("/");
+    if (params.get("from") === "home") {
+      router.replace(`/catalog?url=${encodeURIComponent(catalogUrl)}`);
+    } else {
+      router.back();
+    }
   };
 
   const goChapter = (url: string) => {
-    router.push(`/read?url=${encodeURIComponent(url)}&catalog=${encodeURIComponent(catalogUrl)}`);
+    const fromParam = params.get("from") ? `&from=${params.get("from")}` : "";
+    router.replace(`/read?url=${encodeURIComponent(url)}&catalog=${encodeURIComponent(catalogUrl)}${fromParam}`);
   };
 
   const cycleTheme = () => {
