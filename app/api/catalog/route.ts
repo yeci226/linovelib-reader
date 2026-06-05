@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as cheerio from "cheerio";
 import { cfFetchHtml } from "@/lib/cf-fetch";
-import { readCache, writeCache } from "@/lib/cache";
+import { getCatalogDb, setCatalogDb } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const CATALOG_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
+const CATALOG_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const TW_ORIGIN = "https://tw.linovelib.com";
 const BILI_ORIGIN = "https://www.bilinovel.com";
 
@@ -174,21 +174,21 @@ export async function GET(req: NextRequest) {
   const force = req.nextUrl.searchParams.get("refresh") === "1";
   if (!url) return NextResponse.json({ error: "Missing url" }, { status: 400 });
 
-  // Normalize: cache key uses tw.linovelib.com, fetch from bilinovel.com (no CF)
+  // Normalize: cache key uses tw.linovelib.com, fetch from tw.linovelib.com
   const twUrl = toTwLinovelib(url);
-  const fetchUrl = toBilinovel(url);
+  const fetchUrl = twUrl;
 
   try {
     if (!force) {
-      const cached = await readCache<CatalogResult>("catalog", twUrl);
-      if (cached) return NextResponse.json({ ...cached, cached: true });
+      const cached = getCatalogDb(twUrl);
+      if (cached && cached.title !== "未知小說") return NextResponse.json({ ...cached, cached: true });
     }
 
     const html = await cfFetchHtml(fetchUrl);
     const $ = cheerio.load(html);
 
     const title =
-      $("h1.book-title, h1").first().text().trim() || "未知小說";
+      $("h1.book-title, h1, h2.book-title, h2.title, .book-title").first().text().trim() || "未知小說";
 
     // Novel cover
     const coverEl = $(".book-img img, .cover img, .novel-cover img").first();
@@ -250,7 +250,7 @@ export async function GET(req: NextRequest) {
     }
 
     const result: CatalogResult = { title, coverUrl, volumes };
-    await writeCache("catalog", twUrl, result, CATALOG_TTL_MS);
+    setCatalogDb(twUrl, result);
     return NextResponse.json({ ...result, cached: false });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });

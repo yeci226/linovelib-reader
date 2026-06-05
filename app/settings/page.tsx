@@ -135,10 +135,10 @@ export default function SettingsPage() {
           <div style={{ background: "var(--surface)", padding: 20, borderRadius: 8, border: "1px solid var(--border)" }}>
             <p style={{ color: "var(--text)", marginBottom: 16 }}>您已登入，閱讀進度將自動同步至雲端。</p>
             <div style={{ display: "flex", gap: 12 }}>
-              <button onClick={() => { setMsg("同步中..."); triggerSyncPull().then(() => setMsg("雲端同步完成！")); }} style={{ flex: 1, background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "8px", borderRadius: 6 }}>
+              <button onClick={() => { setMsg("同步中..."); triggerSyncPull().then(() => setMsg("雲端同步完成！")); }} style={{ flex: 1, fontFamily: "inherit", fontSize: 14, background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "8px", borderRadius: 6, cursor: "pointer" }}>
                 手動下載雲端進度
               </button>
-              <button onClick={handleLogout} style={{ flex: 1, background: "#e06c6c20", border: "1px solid #e06c6c50", color: "#e06c6c", padding: "8px", borderRadius: 6 }}>
+              <button onClick={handleLogout} style={{ flex: 1, fontFamily: "inherit", fontSize: 14, background: "#e06c6c20", border: "1px solid #e06c6c50", color: "#e06c6c", padding: "8px", borderRadius: 6, cursor: "pointer" }}>
                 登出
               </button>
             </div>
@@ -158,10 +158,10 @@ export default function SettingsPage() {
               style={{ padding: "10px 12px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)" }}
             />
             <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
-              <button disabled={loading} onClick={() => handleAuth(true)} style={{ flex: 1, background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "10px", borderRadius: 6, fontWeight: 700 }}>
+              <button disabled={loading} onClick={() => handleAuth(true)} style={{ flex: 1, fontFamily: "inherit", fontSize: 14, background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "10px", borderRadius: 6, fontWeight: 700, cursor: "pointer" }}>
                 登入
               </button>
-              <button disabled={loading} onClick={() => handleAuth(false)} style={{ flex: 1, background: "var(--accent)", border: "none", color: "#000", padding: "10px", borderRadius: 6, fontWeight: 700 }}>
+              <button disabled={loading} onClick={() => handleAuth(false)} style={{ flex: 1, fontFamily: "inherit", fontSize: 14, background: "var(--accent)", border: "none", color: "#000", padding: "10px", borderRadius: 6, fontWeight: 700, cursor: "pointer" }}>
                 註冊
               </button>
             </div>
@@ -177,16 +177,16 @@ export default function SettingsPage() {
             <span style={{ color: "var(--text-muted)", fontSize: 14 }}>目前快取大小</span>
             <span style={{ color: "var(--text)", fontWeight: 700 }}>{cacheSize} KB</span>
           </div>
-          <button onClick={clearCache} style={{ background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "8px", borderRadius: 6 }}>
+          <button onClick={clearCache} style={{ fontFamily: "inherit", fontSize: 14, background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "8px", borderRadius: 6, cursor: "pointer" }}>
             清除章節與目錄快取
           </button>
           
           <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "8px 0" }} />
           
-          <button onClick={exportData} style={{ background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "8px", borderRadius: 6 }}>
+          <button onClick={exportData} style={{ fontFamily: "inherit", fontSize: 14, background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "8px", borderRadius: 6, cursor: "pointer" }}>
             匯出所有進度 (Backup)
           </button>
-          <label style={{ display: "block", textAlign: "center", background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "8px", borderRadius: 6, cursor: "pointer" }}>
+          <label style={{ fontFamily: "inherit", fontSize: 14, display: "block", textAlign: "center", background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "8px", borderRadius: 6, cursor: "pointer" }}>
             <input type="file" accept=".json" onChange={importData} style={{ display: "none" }} />
             匯入進度 (Restore)
           </label>

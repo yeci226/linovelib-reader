@@ -6,6 +6,8 @@ import {
   getEntryFor,
   markChapterVisited,
   getCachedChapterTitle,
+  resolveChapterTitle,
+  saveScrollProgress,
   addBookmark,
   getBookmarksForChapter,
   removeBookmark,
@@ -130,11 +132,12 @@ function contentToNodes(content: string): ContentNode[] {
 }
 
 type Theme = "dark" | "sepia" | "light" | "amoled";
-type FontFamily = "sans" | "serif";
+type FontFamily = "sans" | "serif" | "kai";
 
 const FONT_MAP: Record<FontFamily, string> = {
   sans: "Arial, Helvetica, sans-serif",
   serif: '"Georgia", "Times New Roman", serif',
+  kai: '"LXGW WenKai TC", cursive, serif',
 };
 
 const LINE_HEIGHTS = [1.7, 1.95, 2.4] as const;
@@ -252,6 +255,15 @@ function ReadContent() {
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
+  // Auto-save scroll progress
+  useEffect(() => {
+    if (!catalogUrl || loading) return;
+    const timeout = setTimeout(() => {
+      saveScrollProgress(catalogUrl, progress);
+    }, 1000);
+    return () => clearTimeout(timeout);
+  }, [progress, catalogUrl, loading]);
+
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -281,7 +293,7 @@ function ReadContent() {
     setError("");
     setNextUrl(cached ? cached.nextChapterUrl : null);
     setPrevUrl(null);
-    setNextTitle(cached?.nextChapterUrl ? getCachedChapterTitle(cached.nextChapterUrl) : "");
+    setNextTitle(cached?.nextChapterUrl ? resolveChapterTitle(catalogUrl, cached.nextChapterUrl) : "");
     setPrevTitle("");
     setPageCount(cached ? 1 : 0);
     window.scrollTo(0, 0);
@@ -295,13 +307,14 @@ function ReadContent() {
         setNodes(cached.nodes);
         setLoading(false);
         setNextUrl(cached.nextChapterUrl);
-        setNextTitle(cached.nextChapterUrl ? getCachedChapterTitle(cached.nextChapterUrl) : "");
+        setNextTitle(cached.nextChapterUrl ? resolveChapterTitle(catalogUrl, cached.nextChapterUrl) : "");
         setPageCount(1);
         if (cached.nextChapterUrl) {
           prefetchNextChapter(cached.nextChapterUrl);
         }
         if (catalogUrl && cached.title) {
           const existing = getEntryFor(catalogUrl);
+          const restoredPct = (existing?.lastChapterUrl === chapterUrl) ? (existing?.lastScrollPct || 0) : 0;
           saveProgress({
             catalogUrl,
             novelTitle: existing?.novelTitle || "",
@@ -312,8 +325,18 @@ function ReadContent() {
             totalChapters: existing?.totalChapters ?? 0,
             updatedAt: Date.now(),
             visitedChapters: existing?.visitedChapters ?? {},
+            lastScrollPct: restoredPct,
           });
           markChapterVisited(catalogUrl, chapterUrl, cached.title);
+
+          if (restoredPct > 0) {
+            setTimeout(() => {
+              window.scrollTo({
+                top: (restoredPct / 100) * (document.body.scrollHeight - window.innerHeight),
+                behavior: "instant"
+              });
+            }, 50);
+          }
         }
         return;
       }
@@ -333,10 +356,11 @@ function ReadContent() {
       setLoading(false);
       setPageCount(1);
       setPrevUrl(data.prevChapterUrl);
-      setPrevTitle(data.prevChapterUrl ? getCachedChapterTitle(data.prevChapterUrl) : "");
+      setPrevTitle(data.prevChapterUrl ? resolveChapterTitle(catalogUrl, data.prevChapterUrl) : "");
 
       if (catalogUrl && chTitle) {
         const existing = getEntryFor(catalogUrl);
+        const restoredPct = (existing?.lastChapterUrl === chapterUrl) ? (existing?.lastScrollPct || 0) : 0;
         saveProgress({
           catalogUrl,
           novelTitle: existing?.novelTitle || "",
@@ -347,14 +371,24 @@ function ReadContent() {
           totalChapters: existing?.totalChapters ?? 0,
           updatedAt: Date.now(),
           visitedChapters: existing?.visitedChapters ?? {},
+          lastScrollPct: restoredPct,
         });
         markChapterVisited(catalogUrl, chapterUrl, chTitle);
+
+        if (restoredPct > 0) {
+          setTimeout(() => {
+            window.scrollTo({
+              top: (restoredPct / 100) * (document.body.scrollHeight - window.innerHeight),
+              behavior: "instant"
+            });
+          }, 50);
+        }
       }
 
       if (!data.nextPageUrl) {
         // Single-page chapter
         setNextUrl(data.nextChapterUrl);
-        setNextTitle(data.nextChapterUrl ? getCachedChapterTitle(data.nextChapterUrl) : "");
+        setNextTitle(data.nextChapterUrl ? resolveChapterTitle(catalogUrl, data.nextChapterUrl) : "");
         saveChapterCache(chapterUrl, {
           title: chTitle,
           subtitle: "",
@@ -386,7 +420,7 @@ function ReadContent() {
           if (!nextPage) {
             // Last sub-page reached
             setNextUrl(pageData.nextChapterUrl);
-            setNextTitle(pageData.nextChapterUrl ? getCachedChapterTitle(pageData.nextChapterUrl) : "");
+            setNextTitle(pageData.nextChapterUrl ? resolveChapterTitle(catalogUrl, pageData.nextChapterUrl) : "");
             saveChapterCache(chapterUrl, {
               title: chTitle,
               subtitle: "",
@@ -428,11 +462,11 @@ function ReadContent() {
   const themeIcon = theme === "dark" ? "☀" : theme === "sepia" ? "📜" : theme === "light" ? "🌙" : "⚫";
 
   const cycleFontFamily = () => {
-    setFontFamily(f => f === "sans" ? "serif" : "sans");
+    setFontFamily(f => f === "sans" ? "serif" : f === "serif" ? "kai" : "sans");
   };
 
   // Label shows NEXT option
-  const fontLabel = fontFamily === "sans" ? "宋" : "黑";
+  const fontLabel = fontFamily === "sans" ? "宋" : fontFamily === "serif" ? "楷" : "黑";
 
   const cycleLineHeight = () => {
     setLineHeightIdx(i => (i + 1) % LINE_HEIGHTS.length);
@@ -484,7 +518,7 @@ function ReadContent() {
         const dx = e.changedTouches[0].clientX - touchStart.current.x;
         const dy = e.changedTouches[0].clientY - touchStart.current.y;
         touchStart.current = null;
-        if (Math.abs(dx) > 50 && Math.abs(dy) < Math.abs(dx)) {
+        if (Math.abs(dx) > 120 && Math.abs(dy) < Math.abs(dx)) {
           if (dx < 0 && nextUrl && !loading) goChapter(nextUrl);
           if (dx > 0 && prevUrl && !loading) goChapter(prevUrl);
         }

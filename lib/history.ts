@@ -15,6 +15,7 @@ export type HistoryEntry = {
   updatedAt: number;
   /** url → title for every chapter the user has actually opened */
   visitedChapters: Record<string, string>;
+  lastScrollPct?: number;
 };
 
 function load(): HistoryEntry[] {
@@ -139,6 +140,33 @@ export function getCachedChapterTitle(chapterUrl: string): string {
     if (t) return t;
   }
   return "";
+}
+
+export function resolveChapterTitle(catalogUrl: string, chapterUrl: string): string {
+  if (!chapterUrl) return "";
+  const cached = getCachedChapterTitle(chapterUrl);
+  if (cached) return cached;
+  if (catalogUrl) {
+    const catalog = getCatalogCache(catalogUrl);
+    if (catalog) {
+      for (const group of catalog.groups) {
+        for (const ch of group.chapters) {
+          if (ch.url === chapterUrl) return ch.title;
+        }
+      }
+    }
+  }
+  return "";
+}
+
+export function saveScrollProgress(catalogUrl: string, pct: number): void {
+  if (typeof window === "undefined" || !catalogUrl) return;
+  const all = load();
+  const idx = all.findIndex(e => e.catalogUrl === catalogUrl);
+  if (idx !== -1) {
+    all[idx].lastScrollPct = pct;
+    save(all, true);
+  }
 }
 
 // ---------------------------------------------------------------------------

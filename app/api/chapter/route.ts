@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import * as cheerio from "cheerio";
 import type { CheerioAPI } from "cheerio";
 import { cfFetchHtmlEx } from "@/lib/cf-fetch";
-import { readCache, writeCache } from "@/lib/cache";
+import { getChapterDb, setChapterDb, addImageDb } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -21,6 +21,15 @@ type ChapterPageResult = {
   /** URL of the previous chapter (only present on first sub-page). */
   prevChapterUrl: string | null;
 };
+
+function extractCatalogUrl(chapterUrl: string): string {
+  const match = /\/novel\/(\d+)\//.exec(chapterUrl);
+  if (match) {
+    const origin = new URL(chapterUrl).origin;
+    return `${origin}/novel/${match[1]}.html`;
+  }
+  return "";
+}
 
 // ─── ChapterLog (paragraph-shuffle) logic ───────────────────────────────────
 // Ported from bili_novel_packer (Dart) by Montaro2017
@@ -433,17 +442,25 @@ async function extractPage(
       );
     };
 
+    // Helper to add image to DB and content
+    const processImageSrc = (src: string) => {
+      if (src && !src.startsWith("data:")) {
+        const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
+        content += `[IMG:${abs}]\n\n`;
+        const catalogUrl = extractCatalogUrl(currentUrl);
+        if (catalogUrl) {
+          addImageDb(catalogUrl, currentUrl, title, abs, "");
+        }
+      }
+    };
+
     // Iterate direct children of contentEl to preserve order and avoid double-counting
     contentEl.children().each((_, el) => {
       const tag = (el as { name?: string }).name ?? "";
 
       // Standalone <img> direct child
       if (tag === "img") {
-        const src = extractImgSrc($(el));
-        if (src && !src.startsWith("data:")) {
-          const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
-          content += `[IMG:${abs}]\n\n`;
-        }
+        processImageSrc(extractImgSrc($(el)));
         return;
       }
 
@@ -452,11 +469,7 @@ async function extractPage(
         const imgEls = $(el).find("img");
         if (imgEls.length) {
           imgEls.each((_, img) => {
-            const src = extractImgSrc($(img));
-            if (src && !src.startsWith("data:")) {
-              const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
-              content += `[IMG:${abs}]\n\n`;
-            }
+            processImageSrc(extractImgSrc($(img)));
           });
         }
         if (tag === "figure") return;
@@ -470,13 +483,7 @@ async function extractPage(
       if (tag === "center") {
         const imgEls = $(el).find("img");
         if (imgEls.length) {
-          imgEls.each((_, img) => {
-            const src = extractImgSrc($(img));
-            if (src && !src.startsWith("data:")) {
-              const abs = src.startsWith("http") ? src : new URL(src, currentUrl).toString();
-              content += `[IMG:${abs}]\n\n`;
-            }
-          });
+          imgEls.each((_, img) => processImageSrc(extractImgSrc($(img))));
         }
       }
     });
@@ -521,7 +528,7 @@ export async function GET(req: NextRequest) {
 
   try {
     if (!force) {
-      const cached = await readCache<ChapterPageResult>("chapter-page", url);
+      const cached = getChapterDb(url);
       if (cached) return NextResponse.json({ ...cached, cached: true });
     }
 
@@ -536,7 +543,10 @@ export async function GET(req: NextRequest) {
       nextChapterUrl,
       prevChapterUrl,
     };
-    await writeCache("chapter-page", url, result, CHAPTER_TTL_MS);
+    const catalogUrl = extractCatalogUrl(url);
+    if (catalogUrl) {
+      setChapterDb(url, catalogUrl, result);
+    }
     return NextResponse.json({ ...result, cached: false });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });

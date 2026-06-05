@@ -71,8 +71,8 @@ export default function Home() {
         輕小說閱讀器
       </h1>
       <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
-        <button onClick={() => router.push("/bookshelf")} style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "6px 14px", borderRadius: 16, fontSize: 13, cursor: "pointer" }}>
-          <BookIcon style={{ fontSize: 14 }} /> 我的書架
+        <button onClick={() => router.push("/library")} style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "6px 14px", borderRadius: 16, fontSize: 13, cursor: "pointer" }}>
+          <BookIcon style={{ fontSize: 14 }} /> 小說文庫
         </button>
         <button onClick={() => router.push("/settings")} style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "6px 14px", borderRadius: 16, fontSize: 13, cursor: "pointer" }}>
           <SettingsIcon style={{ fontSize: 14 }} /> 設定與同步
@@ -172,13 +172,13 @@ export default function Home() {
           {history.map(entry => (
             <div
               key={entry.catalogUrl}
-              style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 10px", borderRadius: 8, border: "1px solid transparent", transition: "all .12s" }}
+              style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 10px", borderRadius: 8, border: "1px solid transparent", transition: "all .12s", cursor: "pointer" }}
               onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = "var(--surface)"; (e.currentTarget as HTMLDivElement).style.borderColor = "var(--border)"; }}
               onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = ""; (e.currentTarget as HTMLDivElement).style.borderColor = "transparent"; }}
+              onClick={() => resumeReading(entry)}
             >
               <div 
-                style={{ width: 42, height: 58, borderRadius: 4, flexShrink: 0, overflow: "hidden", border: "1px solid var(--border)", background: "var(--surface2)", cursor: "pointer" }}
-                onClick={() => router.push(`/catalog?url=${encodeURIComponent(entry.catalogUrl)}`)}
+                style={{ width: 42, height: 58, borderRadius: 4, flexShrink: 0, overflow: "hidden", border: "1px solid var(--border)", background: "var(--surface2)" }}
               >
                 {entry.coverUrl ? (
                   <img src={`/api/image?url=${encodeURIComponent(entry.coverUrl)}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
@@ -191,19 +191,17 @@ export default function Home() {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div 
                   style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: "pointer" }}
-                  onClick={() => router.push(`/catalog?url=${encodeURIComponent(entry.catalogUrl)}`)}
+                  onClick={(e) => { e.stopPropagation(); router.push(`/catalog?url=${encodeURIComponent(entry.catalogUrl)}`); }}
                 >{entry.novelTitle || "未知小說"}</div>
                 <div 
-                  style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: "pointer" }}
-                  onClick={() => resumeReading(entry)}
+                  style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
                 >上次：{entry.lastChapterTitle || "未知章節"}</div>
                 <div style={{ marginTop: 6, background: "var(--border)", height: 3, borderRadius: 2 }}>
                   <div style={{ height: "100%", borderRadius: 2, background: "var(--accent)", width: `${progressPct(entry)}%` }} />
                 </div>
               </div>
               <div 
-                style={{ color: "var(--text-dim)", flexShrink: 0, fontSize: 18, cursor: "pointer", padding: "0 8px" }}
-                onClick={() => router.push(`/catalog?url=${encodeURIComponent(entry.catalogUrl)}`)}
+                style={{ color: "var(--text-dim)", flexShrink: 0, fontSize: 18, padding: "0 8px" }}
               >›</div>
             </div>
           ))}

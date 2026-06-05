@@ -96,9 +96,9 @@ function CatalogContent() {
 
     const cached = getCatalogCache(catalogUrl);
     if (cached) {
-      // Already shown synchronously — just background-refresh if stale
-      const ONE_DAY = 24 * 60 * 60 * 1000;
-      if (Date.now() - cached.cachedAt > ONE_DAY) {
+      // Already shown synchronously — background-refresh if older than 4 hours or missing title
+      const REFRESH_INTERVAL = 4 * 60 * 60 * 1000; // 4 hours
+      if (Date.now() - cached.cachedAt > REFRESH_INTERVAL || cached.title === "未知小說") {
         fetchCatalog(catalogUrl)
           .then(parsed => applyParsed(parsed, catalogUrl))
           .catch(() => {});
@@ -189,8 +189,8 @@ function CatalogContent() {
     <main style={{ minHeight: "100vh" }}>
       {/* Sticky header */}
       <div style={{ position: "sticky", top: 0, zIndex: 10, background: "var(--bg)", borderBottom: "1px solid var(--border)", padding: "16px 20px" }}>
-        <button onClick={() => router.push("/")} style={{ fontSize: 12, color: "var(--text-muted)", background: "none", border: "none", display: "flex", alignItems: "center", gap: 5, marginBottom: 14 }}>
-          ← 返回首頁
+        <button onClick={() => router.back()} style={{ fontSize: 12, color: "var(--text-muted)", background: "none", border: "none", display: "flex", alignItems: "center", gap: 5, marginBottom: 14 }}>
+          ← 返回
         </button>
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
           <div style={{ width: 70, height: 96, borderRadius: 6, flexShrink: 0, overflow: "hidden", border: "1px solid var(--border)", background: "var(--surface2)" }}>
@@ -209,26 +209,40 @@ function CatalogContent() {
                 共 {totalChapters} 章
                 {visitedCount > 0 && <> · 已看 {visitedCount} 章</>}
               </div>
-              <button 
-                onClick={handleBookshelfToggle}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  background: inBookshelf ? "transparent" : "var(--accent)",
-                  color: inBookshelf ? "var(--text-muted)" : "#0a0a0d",
-                  border: inBookshelf ? "1px solid var(--border)" : "none",
-                  borderRadius: 4,
-                  padding: "4px 10px",
-                  fontSize: 12,
-                  fontWeight: inBookshelf ? 400 : 700,
-                  cursor: "pointer",
-                  transition: "all .15s"
-                }}
-              >
-                <BookIcon style={{ fontSize: 14 }} />
-                {inBookshelf ? "已在書架" : "加入書架"}
-              </button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button 
+                  onClick={() => router.push(`/gallery?url=${encodeURIComponent(catalogUrl)}`)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    background: "var(--surface2)", color: "var(--text)",
+                    border: "1px solid var(--border)", borderRadius: 4,
+                    padding: "4px 10px", fontSize: 12, cursor: "pointer",
+                    transition: "all .15s"
+                  }}
+                >
+                  🖼️ 畫廊
+                </button>
+                <button 
+                  onClick={handleBookshelfToggle}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: inBookshelf ? "transparent" : "var(--accent)",
+                    color: inBookshelf ? "var(--text-muted)" : "#0a0a0d",
+                    border: inBookshelf ? "1px solid var(--border)" : "none",
+                    borderRadius: 4,
+                    padding: "4px 10px",
+                    fontSize: 12,
+                    fontWeight: inBookshelf ? 400 : 700,
+                    cursor: "pointer",
+                    transition: "all .15s"
+                  }}
+                >
+                  <BookIcon style={{ fontSize: 14 }} />
+                  {inBookshelf ? "已在書架" : "加入書架"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
