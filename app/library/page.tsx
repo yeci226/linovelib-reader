@@ -107,7 +107,7 @@ export default function LibraryPage() {
       if (savedScroll !== null) {
         setTimeout(() => {
           window.scrollTo({ top: parseInt(savedScroll, 10), behavior: "instant" });
-        }, 50);
+        }, 250);
         sessionStorage.removeItem('libraryScroll');
       } else {
         window.scrollTo({ top: 0, behavior: "smooth" });
@@ -239,7 +239,7 @@ export default function LibraryPage() {
       const rest = items.slice(3);
       return (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 20, maxWidth: 1200, margin: "0 auto 20px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, maxWidth: 1200, margin: "0 auto 20px" }}>
             {top3.map((item, i) => renderBookCard(item, i, i + 1, i === 0, i > 0))}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 20, maxWidth: 1200, margin: "0 auto" }}>
@@ -264,7 +264,7 @@ export default function LibraryPage() {
     <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)" }}>
       <style>{`
         .book-card { display: flex; gap: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; position: relative; }
-        .book-desc { font-size: 13px; color: var(--text-muted); line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: clip; margin-bottom: 8px; }
+        .book-desc { font-size: 13px; color: var(--text-muted); line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px; }
         .top-badge { position: absolute; top: -10px; left: -10px; background: var(--accent); color: var(--bg); font-weight: 900; font-size: 16px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 50%; box-shadow: 0 2px 8px rgba(0,0,0,.3); z-index: 2; border: 2px solid var(--surface); pointer-events: none; }
         .clickable-text { cursor: pointer; transition: color .2s; }
         .clickable-text:hover { color: var(--accent); text-decoration: underline; }
