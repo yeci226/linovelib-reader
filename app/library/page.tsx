@@ -273,7 +273,7 @@ export default function LibraryPage() {
 
     return (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 20, maxWidth: 1200, margin: "0 auto" }}>
-        {items.map((item, i) => {
+        {displayedItems.map((item, i) => {
           const rank = loadedTab === "top" ? (page - 1) * 50 + i + 1 : null;
           return renderBookCard(item, i, rank);
         })}
