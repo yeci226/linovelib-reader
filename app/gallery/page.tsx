@@ -56,7 +56,7 @@ function GalleryContent() {
             <p style={{ fontSize: 13, marginTop: 8 }}>當您閱讀章節時，系統會自動在背景收集章節內的插圖。</p>
           </div>
         ) : (
-          <div style={{ columns: "2 150px", columnGap: 16 }}>
+          <div style={{ columns: "3 160px", columnGap: 16 }}>
             {images.map(img => (
               <div 
                 key={img.id} 

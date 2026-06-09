@@ -1,15 +1,26 @@
 "use client";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { getAuthToken, setAuthToken, triggerSyncPull, triggerSyncPush } from "@/lib/sync";
+import { getAuthToken, setAuthToken, triggerSyncPull, triggerSyncPush, getUsernameFromToken } from "@/lib/sync";
 import { getHistory, getAllBookmarks, loadBookshelf, save, saveBookmarks, saveBookshelf } from "@/lib/history";
+import { AvatarUploader } from "@/components/AvatarUploader";
+
+const fileToBase64 = (f: File): Promise<string> => new Promise((resolve) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result as string);
+  reader.readAsDataURL(f);
+});
 
 export default function SettingsPage() {
   const router = useRouter();
   const [token, setTokenState] = useState<string | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [inviteCode, setInviteCode] = useState("");
+  const [answer1, setAnswer1] = useState("");
+  const [answer2, setAnswer2] = useState("");
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string>("");
+  const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
   const [cacheSize, setCacheSize] = useState(0);
@@ -17,7 +28,27 @@ export default function SettingsPage() {
   useEffect(() => {
     setTokenState(getAuthToken());
     calculateCache();
+    const cachedAvatar = localStorage.getItem('linovelib-avatar');
+    if (cachedAvatar) {
+      setStats((prev: any) => ({ ...prev, avatarUrl: cachedAvatar }));
+    }
   }, []);
+
+  useEffect(() => {
+    if (token) {
+      fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } })
+        .then(res => res.json())
+        .then(data => {
+          if (data.username) {
+            setStats(data);
+            if (data.avatarUrl) {
+              localStorage.setItem('linovelib-avatar', data.avatarUrl);
+            }
+          }
+        })
+        .catch(console.error);
+    }
+  }, [token]);
 
   const calculateCache = () => {
     let total = 0;
@@ -48,7 +79,10 @@ export default function SettingsPage() {
     setMsg("");
     try {
       const body: any = { username, password };
-      if (!isLogin) body.inviteCode = inviteCode;
+      if (!isLogin) {
+        body.answer1 = answer1;
+        body.answer2 = answer2;
+      }
 
       const res = await fetch(`/api/auth/${isLogin ? "login" : "register"}`, {
         method: "POST",
@@ -62,6 +96,15 @@ export default function SettingsPage() {
       setAuthToken(data.token);
       setTokenState(data.token);
       setMsg(`歡迎，${data.username}！`);
+
+      if (!isLogin && avatarFile) {
+        const base64 = await fileToBase64(avatarFile);
+        await fetch("/api/auth/avatar", { 
+          method: "POST", 
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.token}` }, 
+          body: JSON.stringify({ avatarBase64: base64 }) 
+        }).catch(() => {});
+      }
       
       // Auto pull and push to merge local and cloud
       await triggerSyncPull();
@@ -133,7 +176,69 @@ export default function SettingsPage() {
         <h2 style={{ fontSize: 18, color: "var(--text)", marginBottom: 16 }}>帳號與同步</h2>
         {token ? (
           <div style={{ background: "var(--surface)", padding: 20, borderRadius: 8, border: "1px solid var(--border)" }}>
-            <p style={{ color: "var(--text)", marginBottom: 16 }}>您已登入，閱讀進度將自動同步至雲端。</p>
+            <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 24 }}>
+              <AvatarUploader 
+                currentPreviewUrl={stats?.avatarUrl || ""}
+                onCropped={async (file, url) => {
+                  setMsg("上傳頭像中...");
+                  const base64 = await fileToBase64(file);
+                  const res = await fetch("/api/auth/avatar", { 
+                    method: "POST", 
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, 
+                    body: JSON.stringify({ avatarBase64: base64 }) 
+                  });
+                  if (res.ok) {
+                    const data = await res.json();
+                    setStats((prev: any) => ({ ...prev, avatarUrl: data.avatarUrl }));
+                    localStorage.setItem('linovelib-avatar', data.avatarUrl);
+                    setMsg("頭像更新成功！");
+                  }
+                  else setMsg("頭像更新失敗");
+                }} 
+              />
+              <div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                  <div style={{ fontSize: 18, fontWeight: "bold", color: "var(--text)" }}>{getUsernameFromToken(token)}</div>
+                  {stats?.level && (
+                    <span style={{ fontSize: 11, fontWeight: "bold", background: "var(--accent)", color: "#000", padding: "2px 6px", borderRadius: 4 }}>
+                      Lv.{stats.level}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>您已登入，閱讀進度將自動同步至雲端。</div>
+              </div>
+            </div>
+
+            {stats && (
+              <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: 16, marginBottom: 24 }}>
+                <h3 style={{ fontSize: 14, color: "var(--text)", marginBottom: 12, borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>閱讀與等級統計</h3>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: "var(--text-dim)" }}>總閱讀字數</div>
+                    <div style={{ fontSize: 16, fontWeight: "bold", color: "var(--text)" }}>{(stats.wordsRead || 0).toLocaleString()} 字</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: "var(--text-dim)" }}>已讀章節</div>
+                    <div style={{ fontSize: 16, fontWeight: "bold", color: "var(--text)" }}>{stats.chaptersRead || 0} 章</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: "var(--text-dim)" }}>已讀小說</div>
+                    <div style={{ fontSize: 16, fontWeight: "bold", color: "var(--text)" }}>{stats.novelsRead || 0} 本</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: "var(--text-dim)" }}>總經驗值 (EXP)</div>
+                    <div style={{ fontSize: 16, fontWeight: "bold", color: "var(--text)" }}>{stats.exp || 0}</div>
+                  </div>
+                </div>
+                <div style={{ width: "100%", height: 6, background: "var(--surface2)", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.min(100, ((stats.currentLevelExp || 0) / (stats.expToNext || 1)) * 100)}%`, height: "100%", background: "var(--accent)", transition: "width 0.3s" }} />
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-dim)", textAlign: "right", marginTop: 4 }}>
+                  升級還需 {(stats.expToNext || 0) - (stats.currentLevelExp || 0)} EXP
+                </div>
+              </div>
+            )}
+
             <div style={{ display: "flex", gap: 12 }}>
               <button onClick={() => { setMsg("同步中..."); triggerSyncPull().then(() => setMsg("雲端同步完成！")); }} style={{ flex: 1, fontFamily: "inherit", fontSize: 14, background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", padding: "8px", borderRadius: 6, cursor: "pointer" }}>
                 手動下載雲端進度
@@ -145,7 +250,7 @@ export default function SettingsPage() {
           </div>
         ) : (
           <div style={{ background: "var(--surface)", padding: 20, borderRadius: 8, border: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 12 }}>
-            <input 
+            <input  
               type="text" placeholder="使用者名稱" value={username} onChange={e => setUsername(e.target.value)}
               style={{ padding: "10px 12px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)" }}
             />
@@ -153,8 +258,13 @@ export default function SettingsPage() {
               type="password" placeholder="密碼" value={password} onChange={e => setPassword(e.target.value)}
               style={{ padding: "10px 12px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)" }}
             />
+            <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 8 }}>註冊安全驗證 (若僅登入免填)：</div>
             <input 
-              type="password" placeholder="註冊邀請碼 (若僅登入免填)" value={inviteCode} onChange={e => setInviteCode(e.target.value)}
+              type="text" placeholder="第一題：輸入一個四字安全碼" value={answer1} onChange={e => setAnswer1(e.target.value)}
+              style={{ padding: "10px 12px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)" }}
+            />
+            <input 
+              type="text" placeholder="第二題：開發者生日 (四個數字)" value={answer2} onChange={e => setAnswer2(e.target.value)}
               style={{ padding: "10px 12px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)" }}
             />
             <div style={{ display: "flex", gap: 12, marginTop: 8 }}>

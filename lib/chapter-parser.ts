@@ -278,8 +278,11 @@ function applyParagraphShuffleDom(
   chapterId: number,
   params: ChapterLogParams,
 ): void {
-  // Remove non-content elements
-  contentEl.querySelectorAll("div, ins, figure, fig, br, script, .tp, .bd").forEach(el => el.remove());
+  // Remove non-content elements, but preserve wrappers that contain images
+  contentEl.querySelectorAll("ins, fig, br, script, .tp, .bd").forEach(el => el.remove());
+  contentEl.querySelectorAll("div, figure").forEach(el => {
+    if (el.querySelectorAll("img").length === 0) el.remove();
+  });
   // Remove fake paragraphs with auto-generated class names like `a1234`
   contentEl.querySelectorAll("p").forEach(el => {
     const cls = el.getAttribute("class") ?? "";
@@ -360,10 +363,8 @@ export function parseChapterHtml(
     "#acontent, #mlfy_main_text, .read-content, .chapter-content, #TextContent"
   );
 
-  if (contentEl && chapterId > 0) {
-    applyParagraphShuffleDom(contentEl, chapterId, clParams);
-  }
-
+  // Playwright already evaluates the page, so paragraphs are in correct order and fake ones are removed.
+  // We just need to extract the text and images.
   let content = "";
   if (contentEl) {
     contentEl.querySelectorAll("p, figure, div, center").forEach(el => {
@@ -382,6 +383,9 @@ export function parseChapterHtml(
       }
       
       if (tag === "figure" || tag === "center") return;
+      
+      // If it's a div wrapper that contains p tags, let the p tags handle the text extraction
+      if (tag === "div" && el.querySelector("p")) return;
       
       const text = restoreChars(el.textContent?.trim() ?? "");
       if (!text) return;

@@ -1,16 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getImagesDb } from "@/lib/db";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const url = req.nextUrl.searchParams.get("url");
-  if (!url) return NextResponse.json({ error: "Missing url" }, { status: 400 });
+  const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:3001";
+  
+  // The frontend passes ?url=<catalogUrl> but the backend expects ?catalogUrl=<catalogUrl>
+  const catalogUrl = req.nextUrl.searchParams.get("url");
+  if (!catalogUrl) {
+    return NextResponse.json({ error: "Missing url" }, { status: 400 });
+  }
 
   try {
-    const images = getImagesDb(url);
-    return NextResponse.json({ images });
-  } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const targetUrl = `${BACKEND_URL.replace(/\/$/, "")}/api/gallery?catalogUrl=${encodeURIComponent(catalogUrl)}`;
+    const proxyRes = await fetch(targetUrl, {
+      headers: { "Authorization": `Bearer ${process.env.AUTH_TOKEN || ""}` }
+    });
+    
+    if (proxyRes.ok) {
+      const data = await proxyRes.json();
+      return NextResponse.json(data);
+    } else {
+      const text = await proxyRes.text();
+      return NextResponse.json({ error: `Backend returned ${proxyRes.status}: ${text}` }, { status: proxyRes.status });
+    }
+  } catch (err) {
+    console.error(`Proxy to backend (/api/gallery) failed:`, err);
+    return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }

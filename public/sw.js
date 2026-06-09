@@ -37,27 +37,7 @@ async function networkFirst(request, cacheName) {
   }
 }
 
-async function networkFirstProxy(request) {
-  try {
-    const response = await fetch(request);
-    if (response.ok) {
-      const headers = new Headers(response.headers);
-      headers.set("Cache-Control", "public, max-age=3600");
-      const modified = new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
-      });
-      const cache = await caches.open(CACHE_NAME);
-      cache.put(request, modified.clone());
-      return modified;
-    }
-    return response;
-  } catch {
-    const cached = await caches.match(request);
-    return cached || Response.error();
-  }
-}
+
 
 async function cacheFirstImage(request) {
   const cache = await caches.open(IMAGE_CACHE_NAME);
@@ -96,9 +76,7 @@ async function trimImageCache(cache) {
 
 self.addEventListener("fetch", (event) => {
   const { url } = event.request;
-  if (url.includes("/api/proxy")) {
-    event.respondWith(networkFirstProxy(event.request));
-  } else if (url.includes("/api/image")) {
+  if (url.includes("/api/image")) {
     event.respondWith(cacheFirstImage(event.request));
   } else {
     event.respondWith(networkFirst(event.request));

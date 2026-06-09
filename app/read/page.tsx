@@ -8,6 +8,8 @@ import {
   getCachedChapterTitle,
   resolveChapterTitle,
   saveScrollProgress,
+  saveChapterScroll,
+  getChapterScroll,
   addBookmark,
   getBookmarksForChapter,
   removeBookmark,
@@ -17,9 +19,12 @@ import {
   loadSettings,
   saveSettings,
   ReaderSettings,
+  getCatalogCache,
 } from "@/lib/history";
 import { parseChapterHtml } from "@/lib/chapter-parser";
-
+import { restoreChars } from "@/lib/linovelib-charmap";
+import { CloseIcon, SunIcon, MoonIcon, ScrollIcon, BookmarkIcon, CircleIcon } from "@/components/icons";
+import { CommentBoard } from "@/components/CommentBoard";
 
 type ChapterPageApiResult = {
   title: string;
@@ -30,61 +35,17 @@ type ChapterPageApiResult = {
   cached?: boolean;
 };
 
-/** Fetch chapter content via the Next.js API route (preferred path). */
-async function fetchChapterPageViaApi(url: string): Promise<ChapterPageApiResult> {
-  const res = await fetch(`/api/chapter?url=${encodeURIComponent(url)}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+/**
+ * Fetch a chapter page via the Next.js API route.
+ * Throws an error if the backend API fails.
+ */
+async function fetchChapterPage(url: string, catalogUrl: string): Promise<ChapterPageApiResult> {
+  const res = await fetch(`/api/chapter?url=${encodeURIComponent(url)}&catalogUrl=${encodeURIComponent(catalogUrl)}`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status}: ${text}`);
+  }
   return res.json();
-}
-
-/**
- * Pure-frontend fallback: fetch raw HTML through the CORS-proxy route,
- * then parse and unshuffle entirely in the browser.
- * Used when the backend API is unavailable.
- *
- * Follows bili_novel_packer: always fetches from www.bilinovel.com (CN, no Cloudflare)
- * so we get raw shuffled HTML that our algorithmic unshuffle can correctly restore.
- */
-async function fetchChapterPageClientSide(url: string): Promise<ChapterPageApiResult> {
-  // Convert to CN domain (www.bilinovel.com) — no Cloudflare, returns raw shuffled HTML.
-  const cnUrl = url
-    .replace("tw.linovelib.com", "www.bilinovel.com")
-    .replace("cn.linovelib.com", "www.bilinovel.com");
-
-  const proxyUrl = `/api/proxy?url=${encodeURIComponent(cnUrl)}`;
-  const htmlRes = await fetch(proxyUrl);
-  if (!htmlRes.ok) throw new Error(`proxy HTTP ${htmlRes.status}`);
-  const html = await htmlRes.text();
-
-  // Extract chapterlog.js URL from the raw HTML so we get the correct LCG params
-  let chapterLogJs: string | null = null;
-  const clMatch = /src=["']([^"']*chapterlog\.js[^"']*)["']/.exec(html);
-  if (clMatch) {
-    try {
-      const clUrl = clMatch[1].startsWith("http")
-        ? clMatch[1]
-        : new URL(clMatch[1], cnUrl).toString();
-      const clRes = await fetch(`/api/proxy?url=${encodeURIComponent(clUrl)}`);
-      if (clRes.ok) chapterLogJs = await clRes.text();
-    } catch {
-      // fall through — parseChapterHtml will use FALLBACK_PARAMS
-    }
-  }
-
-  return parseChapterHtml(html, cnUrl, chapterLogJs);
-}
-
-/**
- * Fetch a chapter page: try the API first; if it fails, fall back to
- * pure client-side parsing so the reader works even when the backend is down.
- */
-async function fetchChapterPage(url: string): Promise<ChapterPageApiResult> {
-  try {
-    return await fetchChapterPageViaApi(url);
-  } catch (apiErr) {
-    console.warn("[read] API unavailable, falling back to client-side parsing:", apiErr);
-    return fetchChapterPageClientSide(url);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -94,12 +55,22 @@ async function fetchChapterPage(url: string): Promise<ChapterPageApiResult> {
 const prefetchStore = new Map<string, ChapterPageApiResult>();
 
 /** Prefetch the first page of a chapter and cache the result for instant navigation. */
-async function prefetchNextChapter(url: string): Promise<void> {
+async function prefetchNextChapter(url: string, catalogUrl: string): Promise<void> {
   if (!url || prefetchStore.has(url)) return;
   // Check full chapter cache first — nothing to prefetch if already complete
   if (getChapterCache(url)) return;
   try {
-    const result = await fetchChapterPage(url);
+    const result = await fetchChapterPage(url, catalogUrl);
+    
+    // Fallback for older backends that return 'html' instead of 'content'
+    if (!result.content && (result as any).html) {
+      const parsed = parseChapterHtml((result as any).html, url, null);
+      Object.assign(result, parsed);
+    }
+    
+    // Apply traditional chinese conversion
+    result.content = restoreChars(result.content || "");
+    
     prefetchStore.set(url, result);
     // Single-page chapters can be saved to full chapter cache immediately
     if (!result.nextPageUrl) {
@@ -116,7 +87,7 @@ async function prefetchNextChapter(url: string): Promise<void> {
   }
 }
 
-type ContentNode = { type: "text"; text: string } | { type: "image"; src: string; alt: string };
+type ContentNode = { type: "text"; text: string } | { type: "image"; src: string; alt: string } | { type: "page-number"; text: string };
 
 /** Convert plain-text chapter content (paragraphs separated by \n\n) to ContentNode[] */
 function contentToNodes(content: string): ContentNode[] {
@@ -127,6 +98,11 @@ function contentToNodes(content: string): ContentNode[] {
     .map(line => {
       const imgMatch = /^\[IMG:(https?:\/\/.+)\]$/.exec(line);
       if (imgMatch) return { type: "image" as const, src: imgMatch[1], alt: "" };
+      
+      if (/^\d{1,3}$/.test(line) || /^-\s*\d{1,3}\s*-$/.test(line)) {
+        return { type: "page-number" as const, text: line };
+      }
+      
       return { type: "text" as const, text: line };
     });
 }
@@ -145,7 +121,8 @@ const LINE_HEIGHTS = [1.7, 1.95, 2.4] as const;
 function ReadContent() {
   const params = useSearchParams();
   const router = useRouter();
-  const chapterUrl = params.get("url") || "";
+  const urlParam = params.get("url");
+  const chapterUrl = (urlParam && urlParam !== "null") ? urlParam : "";
   const catalogUrl = params.get("catalog") || "";
 
   const READ_WIDTHS = [660, 800, 960, 1200] as const;
@@ -208,6 +185,42 @@ function ReadContent() {
 
   const contentRef = useRef<HTMLDivElement>(null);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const pendingRestoreRef = useRef<number>(0);
+
+  // Auto Scroll
+  const [autoScroll, setAutoScroll] = useState(false);
+  const [scrollSpeed, setScrollSpeed] = useState(2); // 1-5
+
+  // UI Toggle & Drawer
+  const [showUI, setShowUI] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const catalog = catalogUrl ? getCatalogCache(catalogUrl) : null;
+  const [visitedChapters, setVisitedChapters] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (catalogUrl) {
+      const entry = getEntryFor(catalogUrl);
+      if (entry) {
+        setVisitedChapters(entry.visitedChapters || {});
+      }
+    }
+  }, [catalogUrl, chapterUrl, drawerOpen]);
+
+  // Scroll to active chapter in drawer when opened
+  useEffect(() => {
+    if (drawerOpen && chapterUrl) {
+      setTimeout(() => {
+        const el = document.getElementById(`drawer-ch-${encodeURIComponent(chapterUrl)}`);
+        const container = document.getElementById("drawer-scroll-container");
+        if (el && container) {
+          container.scrollTo({
+            top: el.offsetTop - container.offsetHeight / 2 + el.offsetHeight / 2,
+            behavior: "smooth"
+          });
+        }
+      }, 50); // slight delay to ensure render
+    }
+  }, [drawerOpen, chapterUrl]);
 
   // Apply theme to document
   useEffect(() => {
@@ -255,14 +268,98 @@ function ReadContent() {
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
-  // Auto-save scroll progress
+  // Auto-save scroll progress & auto bookmark
   useEffect(() => {
-    if (!catalogUrl || loading) return;
+    if (!catalogUrl || loading || !title || progress === 0) return;
     const timeout = setTimeout(() => {
       saveScrollProgress(catalogUrl, progress);
-    }, 1000);
+      if (chapterUrl) {
+        saveChapterScroll(chapterUrl, progress);
+        addBookmark({
+          catalogUrl,
+          novelTitle: title,
+          chapterUrl,
+          chapterTitle: title,
+          scrollPct: progress,
+          isAuto: true,
+        });
+        setBookmarks(getBookmarksForChapter(chapterUrl));
+      }
+    }, 5000);
     return () => clearTimeout(timeout);
-  }, [progress, catalogUrl, loading]);
+  }, [progress, catalogUrl, chapterUrl, loading, title]);
+
+  // Word count reporting
+  const reportedWordsRef = useRef<Set<string>>(new Set());
+  
+  useEffect(() => {
+    if (!chapterUrl || loading || progress < 20 || nodes.length === 0) return;
+    if (reportedWordsRef.current.has(chapterUrl)) return;
+    
+    // Scrolled past 20%, let's report chapter to backend
+    reportedWordsRef.current.add(chapterUrl);
+    const token = localStorage.getItem("linovelib-token");
+    if (token) {
+      fetch("/api/sync/words", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ chapter_url: chapterUrl })
+      }).catch(console.error);
+    }
+  }, [chapterUrl, progress, loading, nodes]);
+
+  // Auto scroll effect
+  useEffect(() => {
+    if (!autoScroll) return;
+    let animationFrameId: number;
+    let lastTime = performance.now();
+    let exactY = window.scrollY;
+    
+    const loop = (time: number) => {
+      const deltaTime = time - lastTime;
+      lastTime = time;
+      
+      if (deltaTime > 0) {
+        // speed 1 -> 15px/s, speed 5 -> 75px/s
+        const pxPerSec = scrollSpeed * 15;
+        exactY += (pxPerSec * deltaTime) / 1000;
+        window.scrollTo(0, exactY);
+        // Sync exactY if user scrolled manually
+        if (Math.abs(exactY - window.scrollY) > 2) {
+          exactY = window.scrollY;
+        }
+      }
+      animationFrameId = requestAnimationFrame(loop);
+    };
+    
+    animationFrameId = requestAnimationFrame(loop);
+    
+    // Stop auto-scroll if user intentional scrolls
+    const handleTouch = () => setAutoScroll(false);
+    window.addEventListener("touchmove", handleTouch, { passive: true });
+    window.addEventListener("wheel", handleTouch, { passive: true });
+    
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      window.removeEventListener("touchmove", handleTouch);
+      window.removeEventListener("wheel", handleTouch);
+    };
+  }, [autoScroll, scrollSpeed]);
+
+  // Restore saved scroll position once the full chapter is loaded (handles multi-page chapters)
+  useEffect(() => {
+    if (loading || loadingMore) return;
+    const pct = pendingRestoreRef.current;
+    if (pct > 0) {
+      pendingRestoreRef.current = 0;
+      window.scrollTo({
+        top: (pct / 100) * (document.body.scrollHeight - window.innerHeight),
+        behavior: "instant",
+      });
+    } else {
+      window.scrollTo({ top: 0, behavior: "instant" });
+    }
+  }, [loading, loadingMore]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -276,8 +373,15 @@ function ReadContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, prevUrl, nextUrl]);
 
+  // Main Data Fetch
   useEffect(() => {
-    if (!chapterUrl) return;
+    if (!chapterUrl) {
+      setError("無效的章節連結 (Invalid URL)");
+      setLoading(false);
+      return;
+    }
+    if (chapterUrl === loadingChapterRef.current) return;
+    
     let cancelled = false;
 
     // Check cache first — may already be shown from synchronous init
@@ -297,6 +401,8 @@ function ReadContent() {
     setPrevTitle("");
     setPageCount(cached ? 1 : 0);
     window.scrollTo(0, 0);
+    // Store the saved scroll position; the restoration effect fires once loading is done.
+    pendingRestoreRef.current = getChapterScroll(chapterUrl);
 
     async function loadInitial() {
       if (cached) {
@@ -310,11 +416,10 @@ function ReadContent() {
         setNextTitle(cached.nextChapterUrl ? resolveChapterTitle(catalogUrl, cached.nextChapterUrl) : "");
         setPageCount(1);
         if (cached.nextChapterUrl) {
-          prefetchNextChapter(cached.nextChapterUrl);
+          prefetchNextChapter(cached.nextChapterUrl, catalogUrl);
         }
         if (catalogUrl && cached.title) {
           const existing = getEntryFor(catalogUrl);
-          const restoredPct = (existing?.lastChapterUrl === chapterUrl) ? (existing?.lastScrollPct || 0) : 0;
           saveProgress({
             catalogUrl,
             novelTitle: existing?.novelTitle || "",
@@ -325,18 +430,11 @@ function ReadContent() {
             totalChapters: existing?.totalChapters ?? 0,
             updatedAt: Date.now(),
             visitedChapters: existing?.visitedChapters ?? {},
-            lastScrollPct: restoredPct,
+            author: existing?.author,
+            desc: existing?.desc,
+            tags: existing?.tags,
           });
           markChapterVisited(catalogUrl, chapterUrl, cached.title);
-
-          if (restoredPct > 0) {
-            setTimeout(() => {
-              window.scrollTo({
-                top: (restoredPct / 100) * (document.body.scrollHeight - window.innerHeight),
-                behavior: "instant"
-              });
-            }, 50);
-          }
         }
         return;
       }
@@ -344,9 +442,15 @@ function ReadContent() {
       // Use prefetched first-page result if available
       const prefetched = prefetchStore.get(chapterUrl);
       if (prefetched) prefetchStore.delete(chapterUrl);
-      const data = prefetched ?? await fetchChapterPage(chapterUrl);
+      const data = prefetched ?? await fetchChapterPage(chapterUrl, catalogUrl);
       if (cancelled) return;
 
+      if (!data.content && (data as any).html) {
+        const parsed = parseChapterHtml((data as any).html, chapterUrl, null);
+        Object.assign(data, parsed);
+      }
+
+      data.content = restoreChars(data.content || "");
       const firstNodes = contentToNodes(data.content);
       const chTitle = data.title;
       setTitle(chTitle);
@@ -360,7 +464,6 @@ function ReadContent() {
 
       if (catalogUrl && chTitle) {
         const existing = getEntryFor(catalogUrl);
-        const restoredPct = (existing?.lastChapterUrl === chapterUrl) ? (existing?.lastScrollPct || 0) : 0;
         saveProgress({
           catalogUrl,
           novelTitle: existing?.novelTitle || "",
@@ -371,18 +474,11 @@ function ReadContent() {
           totalChapters: existing?.totalChapters ?? 0,
           updatedAt: Date.now(),
           visitedChapters: existing?.visitedChapters ?? {},
-          lastScrollPct: restoredPct,
+          author: existing?.author,
+          desc: existing?.desc,
+          tags: existing?.tags,
         });
         markChapterVisited(catalogUrl, chapterUrl, chTitle);
-
-        if (restoredPct > 0) {
-          setTimeout(() => {
-            window.scrollTo({
-              top: (restoredPct / 100) * (document.body.scrollHeight - window.innerHeight),
-              behavior: "instant"
-            });
-          }, 50);
-        }
       }
 
       if (!data.nextPageUrl) {
@@ -396,7 +492,7 @@ function ReadContent() {
           nextChapterUrl: data.nextChapterUrl,
         });
         if (data.nextChapterUrl) {
-          prefetchNextChapter(data.nextChapterUrl);
+          prefetchNextChapter(data.nextChapterUrl, catalogUrl);
         }
         return;
       }
@@ -409,8 +505,15 @@ function ReadContent() {
       while (nextPage) {
         if (cancelled || loadingChapterRef.current !== chapterUrl) return;
         try {
-          const pageData = await fetchChapterPage(nextPage);
+          const pageData = await fetchChapterPage(nextPage, catalogUrl);
           if (cancelled || loadingChapterRef.current !== chapterUrl) return;
+          
+          if (!pageData.content && (pageData as any).html) {
+            const parsedPage = parseChapterHtml((pageData as any).html, nextPage, null);
+            Object.assign(pageData, parsedPage);
+          }
+          
+          pageData.content = restoreChars(pageData.content || "");
           const moreNodes = contentToNodes(pageData.content);
           allNodes.push(...moreNodes);
           pages++;
@@ -428,7 +531,7 @@ function ReadContent() {
               nextChapterUrl: pageData.nextChapterUrl,
             });
             if (pageData.nextChapterUrl) {
-              prefetchNextChapter(pageData.nextChapterUrl);
+              prefetchNextChapter(pageData.nextChapterUrl, catalogUrl);
             }
           }
         } catch (e) {
@@ -445,6 +548,14 @@ function ReadContent() {
 
     return () => { cancelled = true; };
   }, [chapterUrl, catalogUrl]);
+
+  const handleMainClick = (e: React.MouseEvent) => {
+    // 避免點擊按鈕或連結時觸發 UI 切換
+    if ((e.target as HTMLElement).closest('button')) return;
+    if ((e.target as HTMLElement).closest('a')) return;
+    if (zoomedImg) return;
+    setShowUI(prev => !prev);
+  };
 
   const goBack = () => {
     if (params.get("from") === "home") {
@@ -463,7 +574,7 @@ function ReadContent() {
     setTheme(t => t === "dark" ? "sepia" : t === "sepia" ? "light" : t === "light" ? "amoled" : "dark");
   };
 
-  const themeIcon = theme === "dark" ? "☀" : theme === "sepia" ? "📜" : theme === "light" ? "🌙" : "⚫";
+  const themeIcon = theme === "dark" ? <SunIcon /> : theme === "sepia" ? <ScrollIcon /> : theme === "light" ? <MoonIcon /> : <CircleIcon />;
 
   const cycleFontFamily = () => {
     setFontFamily(f => f === "sans" ? "serif" : f === "serif" ? "kai" : "sans");
@@ -512,8 +623,9 @@ function ReadContent() {
 
   return (
     <main
-      style={{ minHeight: "100vh" }}
+      style={{ minHeight: "100vh", position: "relative" }}
       ref={contentRef}
+      onClick={handleMainClick}
       onTouchStart={e => {
         touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
       }}
@@ -534,11 +646,12 @@ function ReadContent() {
       </div>
 
       {/* Toolbar */}
-      <div style={{ position: "sticky", top: 0, zIndex: 10, background: "linear-gradient(to bottom, var(--bg) 55%, transparent)", padding: "12px 20px 32px", pointerEvents: "none" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", pointerEvents: "all" }}>
-          <button onClick={goBack} style={btnStyle}>
-            ← 目錄
-          </button>
+      <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 50, background: "linear-gradient(to bottom, var(--bg) 80%, transparent)", padding: "12px 20px 32px", opacity: showUI ? 1 : 0, transform: showUI ? "translateY(0)" : "translateY(-100%)", transition: "all 0.3s ease", pointerEvents: showUI ? "all" : "none" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={goBack} style={btnStyle}>← 返回</button>
+            <button onClick={() => setDrawerOpen(true)} style={btnStyle}>三 目錄</button>
+          </div>
           <div style={{ display: "flex", gap: 6 }}>
             <button onClick={() => setFontSize(f => Math.max(14, f - 1))} style={btnStyle}>A−</button>
             <button onClick={() => setFontSize(f => Math.min(26, f + 1))} style={btnStyle}>A+</button>
@@ -546,11 +659,16 @@ function ReadContent() {
             <button onClick={cycleLineHeight} style={btnStyle} title="切換行距">≡</button>
             <button onClick={cycleTheme} style={btnStyle} title="切換主題">{themeIcon}</button>
             <button onClick={cycleWidth} style={btnStyle} title="調整閱讀寬度">{readWidth}</button>
+            <button onClick={() => {
+              const nextState = !autoScroll;
+              setAutoScroll(nextState);
+              if (nextState) setShowUI(false);
+            }} style={{ ...btnStyle, color: autoScroll ? "var(--accent)" : "var(--text-muted)" }} title="自動捲動">{autoScroll ? "⏸" : "▶"}</button>
           </div>
         </div>
       </div>
 
-      <div style={{ maxWidth: readWidth, margin: "0 auto", padding: "0 24px", transition: "max-width .2s" }}>
+      <div style={{ maxWidth: readWidth, margin: "0 auto", padding: "60px 24px 0", transition: "max-width .2s" }}>
         {!loading && !error && (
           <div style={{ textAlign: "center", marginBottom: 32 }}>
             {subtitle && (
@@ -577,6 +695,10 @@ function ReadContent() {
             {nodes.map((node, i) =>
               node.type === "text" ? (
                 <p key={i} style={{ marginBottom: "1.5em", textIndent: "2em" }}>{node.text}</p>
+              ) : node.type === "page-number" ? (
+                <div key={i} style={{ textAlign: "center", color: "var(--text-dim)", fontSize: "0.75em", margin: "2.5em 0", opacity: 0.6 }}>
+                  {node.text}
+                </div>
               ) : (
                 <div key={i} style={{ textAlign: "center", margin: "2em 0" }}>
                   <img
@@ -604,33 +726,46 @@ function ReadContent() {
             <button
               onClick={() => prevUrl && goChapter(prevUrl)}
               disabled={!prevUrl}
-              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, maxWidth: 200, opacity: prevUrl ? 1 : 0.3, textAlign: "left" }}
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, maxWidth: 200, opacity: prevUrl ? 1 : 0.3, textAlign: "left", cursor: prevUrl ? "pointer" : "default" }}
             >
               <span style={{ fontSize: 11, color: "var(--text-dim)" }}>← 上一章</span>
-              <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 150 }}>{prevTitle || "上一章"}</span>
+              {prevTitle && <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{prevTitle}</span>}
             </button>
-            <button onClick={goBack} style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: 12, padding: "8px", whiteSpace: "nowrap", alignSelf: "center" }}>
-              目錄
+            <button onClick={goBack} style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "8px 16px", whiteSpace: "nowrap", alignSelf: "center", cursor: "pointer", fontWeight: "bold", boxShadow: "0 2px 4px rgba(0,0,0,0.1)" }}>
+              回到目錄
             </button>
             <button
               onClick={() => nextUrl && goChapter(nextUrl)}
               disabled={!nextUrl}
-              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, maxWidth: 200, opacity: nextUrl ? 1 : 0.3, alignItems: "flex-end" }}
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, maxWidth: 200, opacity: nextUrl ? 1 : 0.3, alignItems: "flex-end", cursor: nextUrl ? "pointer" : "default", textAlign: "right" }}
             >
               <span style={{ fontSize: 11, color: "var(--text-dim)" }}>下一章 →</span>
-              <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 150 }}>{nextTitle || "下一章"}</span>
+              {nextTitle && <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{nextTitle}</span>}
             </button>
+          </div>
+        )}
+
+        {!loading && !error && (
+          <div style={{ paddingBottom: 60 }}>
+            <CommentBoard 
+              title="章節留言板" 
+              apiEndpoint={`/api/comments?chapterUrl=${encodeURIComponent(chapterUrl)}`}
+              postEndpoint="/api/comments"
+              payloadKey="chapterUrl"
+              payloadValue={chapterUrl}
+            />
           </div>
         )}
       </div>
 
       {/* Floating bookmark button */}
-      <div style={{ position: "fixed", bottom: 80, right: 20, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, zIndex: 30 }}>
+      <div style={{ position: "fixed", bottom: 80, right: 20, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, zIndex: 30, opacity: showUI ? 1 : 0, transform: showUI ? "translateY(0)" : "translateY(20px)", transition: "all 0.3s ease", pointerEvents: showUI ? "all" : "none" }}>
         {/* Bookmark pills */}
         {bookmarks.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
             {bookmarks.map(bm => (
               <div key={bm.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 20, padding: "4px 10px", fontSize: 12, color: "var(--text-muted)" }}>
+                {bm.isAuto && <span style={{ color: "var(--accent-dim)", fontSize: 10, fontWeight: "bold" }}>[自動]</span>}
                 <button
                   onClick={() => scrollToBookmark(bm.scrollPct)}
                   style={{ background: "none", border: "none", color: "var(--accent)", fontSize: 12, padding: 0 }}
@@ -639,9 +774,9 @@ function ReadContent() {
                 </button>
                 <button
                   onClick={() => handleRemoveBookmark(bm.id)}
-                  style={{ background: "none", border: "none", color: "var(--text-dim)", fontSize: 12, padding: 0, lineHeight: 1 }}
+                  style={{ background: "none", border: "none", color: "var(--text-dim)", fontSize: 12, padding: 0, lineHeight: 1, display: "flex", alignItems: "center" }}
                 >
-                  ✕
+                  <CloseIcon style={{ fontSize: 14 }} />
                 </button>
               </div>
             ))}
@@ -667,7 +802,7 @@ function ReadContent() {
           }}
           title="新增書籤"
         >
-          🔖
+          <BookmarkIcon style={{ fontSize: 22 }} />
           {bookmarks.length > 0 && (
             <span style={{
               position: "absolute",
@@ -688,6 +823,74 @@ function ReadContent() {
             </span>
           )}
         </button>
+      </div>
+
+      {/* Sidebar Catalog Drawer */}
+      <div style={{ position: "fixed", inset: 0, zIndex: 100, pointerEvents: drawerOpen ? "all" : "none" }}>
+        <div 
+          style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.5)", opacity: drawerOpen ? 1 : 0, transition: "opacity 0.3s" }} 
+          onClick={() => setDrawerOpen(false)}
+        />
+        <div style={{ 
+          position: "absolute", top: 0, bottom: 0, left: 0, width: "80%", maxWidth: 320, 
+          background: "var(--bg)", borderRight: "1px solid var(--border)",
+          transform: drawerOpen ? "translateX(0)" : "translateX(-100%)", transition: "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+          display: "flex", flexDirection: "column"
+        }}>
+          <div style={{ padding: "20px 20px 16px", borderBottom: "1px solid var(--border)", display: "flex", gap: 12, alignItems: "center" }}>
+            {catalog?.coverUrl && <img src={`/api/image?url=${encodeURIComponent(catalog.coverUrl)}`} alt={catalog?.title} style={{ width: 48, height: 64, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />}
+            <div style={{ fontWeight: "bold", fontSize: 16, flex: 1, wordBreak: "break-all", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", lineHeight: 1.4 }}>{catalog?.title || "目錄"}</div>
+            <button onClick={() => setDrawerOpen(false)} style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: 16, padding: 4, display: "flex" }}><CloseIcon style={{ fontSize: 20 }} /></button>
+          </div>
+          <div id="drawer-scroll-container" style={{ flex: 1, overflowY: "auto", position: "relative" }}>
+            {catalog?.groups.map((vol, i) => (
+              <div key={i} style={{ marginTop: i === 0 ? 0 : 16 }}>
+                {(vol.volTitle || vol.coverUrl) && (
+                  <div style={{ display: "flex", alignItems: "center", padding: "12px 20px", background: "var(--surface)", position: "sticky", top: 0, zIndex: 1, gap: 16, borderBottom: "1px solid var(--border)", boxShadow: "0 2px 8px rgba(0,0,0,0.2)" }}>
+                    {vol.coverUrl && (
+                      <img src={`/api/image?url=${encodeURIComponent(vol.coverUrl)}`} alt={vol.volTitle} style={{ width: 64, height: 90, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)", boxShadow: "0 4px 12px rgba(0,0,0,0.3)", flexShrink: 0 }} />
+                    )}
+                    {vol.volTitle && (
+                      <div style={{ fontSize: 15, fontWeight: "bold", color: "var(--text)", flex: 1, lineHeight: 1.4 }}>{vol.volTitle}</div>
+                    )}
+                  </div>
+                )}
+                {vol.chapters.map((ch, j) => {
+                  const isActive = ch.url === chapterUrl;
+                  const isVisited = !!ch.url && !!visitedChapters[ch.url];
+                  return (
+                    <div 
+                      key={j} 
+                      id={`drawer-ch-${encodeURIComponent(ch.url!)}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (ch.url && !isActive) { setDrawerOpen(false); goChapter(ch.url); }
+                      }}
+                      style={{ 
+                        margin: "2px 8px",
+                        borderRadius: 6,
+                        padding: "10px 12px", 
+                        fontSize: 14, 
+                        color: isActive ? "var(--accent)" : "var(--text)",
+                        fontWeight: isActive ? "bold" : "normal",
+                        cursor: "pointer",
+                        border: isActive ? "1px solid rgba(200,169,110,.4)" : "1px solid transparent",
+                        boxShadow: isActive ? "0 2px 8px rgba(200,169,110,.15)" : "none",
+                        background: isActive ? "var(--surface)" : "transparent",
+                        display: "flex", justifyContent: "space-between", alignItems: "center"
+                      }}
+                    >
+                      <span style={{ color: isVisited && !isActive ? "var(--text-muted)" : "inherit", flex: 1, paddingRight: 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ch.title}</span>
+                      {!isActive && (
+                        <span style={{ width: 6, height: 6, borderRadius: "50%", background: isVisited ? "var(--border)" : "var(--accent)", flexShrink: 0 }} />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Image Zoom Modal */}

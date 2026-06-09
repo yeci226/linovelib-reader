@@ -4,10 +4,20 @@ import { triggerSyncPush } from "./sync";
 const STORAGE_KEY = "linovelib-history";
 const MAX_ENTRIES = 20;
 
+/** Normalizes legacy /novel/{id}.html catalogUrls to /novel/{id}/catalog */
+function normalizeCatalogUrl(url: string): string {
+  return url
+    .replace(/(\/novel\/(\d+))\.html$/, '$1/catalog')
+    .replace(/(\/novel\/\d+)$/, '$1/catalog');
+}
+
 export type HistoryEntry = {
   catalogUrl: string;
   novelTitle: string;
   coverUrl: string;
+  author?: string;
+  desc?: string;
+  tags?: string[];
   lastChapterUrl: string;
   lastChapterTitle: string;
   lastChapterIndex: number; // kept for compat, not used for read status
@@ -22,8 +32,19 @@ function load(): HistoryEntry[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as HistoryEntry[];
-    // Back-compat: fill visitedChapters if missing
-    return raw.map(e => ({ ...e, visitedChapters: e.visitedChapters ?? {} }));
+    // Back-compat: fill visitedChapters if missing + normalize legacy .html catalog URLs
+    // Also clear lastChapterUrl if no chapters have been actually visited (was auto-filled by old bug)
+    return raw.map(e => {
+      const visited = e.visitedChapters ?? {};
+      const hasVisited = Object.keys(visited).length > 0;
+      return {
+        ...e,
+        visitedChapters: visited,
+        catalogUrl: normalizeCatalogUrl(e.catalogUrl),
+        lastChapterUrl: hasVisited ? e.lastChapterUrl : "",
+        lastChapterTitle: hasVisited ? e.lastChapterTitle : "",
+      };
+    });
   } catch {
     return [];
   }
@@ -100,6 +121,9 @@ export type CatalogVolumeGroup = { volTitle: string; coverUrl: string; chapters:
 export type CatalogCache = {
   title: string;
   coverUrl: string;
+  author?: string;
+  desc?: string;
+  tags?: string[];
   groups: CatalogVolumeGroup[];
   cachedAt: number;
 };
@@ -184,6 +208,7 @@ export type Bookmark = {
   chapterTitle: string;
   scrollPct: number;    // 0-100, percentage through the chapter
   createdAt: number;
+  isAuto?: boolean;     // indicates this is a system auto-saved bookmark
 };
 
 function loadBookmarks(): Bookmark[] {
@@ -202,7 +227,13 @@ export function saveBookmarks(bms: Bookmark[], skipSync = false): void {
 /** Add a bookmark at the current scroll position. Returns the new bookmark. */
 export function addBookmark(b: Omit<Bookmark, "id" | "createdAt">): Bookmark {
   const bm: Bookmark = { ...b, id: Date.now().toString(), createdAt: Date.now() };
-  const all = loadBookmarks();
+  let all = loadBookmarks();
+  
+  if (bm.isAuto) {
+    // For auto bookmarks, overwrite the existing auto bookmark for the same novel
+    all = all.filter(existing => !(existing.isAuto && existing.catalogUrl === bm.catalogUrl));
+  }
+  
   saveBookmarks([bm, ...all].slice(0, MAX_BOOKMARKS));
   return bm;
 }
@@ -268,10 +299,9 @@ export function isInBookshelf(catalogUrl: string): boolean {
 // ---------------------------------------------------------------------------
 
 const CHAPTER_CACHE_KEY = "linovelib-chapter-cache";
-const CHAPTER_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (chapters don't change)
 const MAX_CHAPTER_CACHE = 100;
 
-export type ContentNode = { type: "text"; text: string } | { type: "image"; src: string; alt: string };
+export type ContentNode = { type: "text"; text: string } | { type: "image"; src: string; alt: string } | { type: "page-number"; text: string };
 
 export type ChapterCache = {
   title: string;
@@ -287,7 +317,6 @@ export function getChapterCache(chapterUrl: string): ChapterCache | null {
     const raw = JSON.parse(localStorage.getItem(CHAPTER_CACHE_KEY) ?? "{}") as Record<string, ChapterCache>;
     const entry = raw[chapterUrl];
     if (!entry) return null;
-    if (Date.now() - entry.cachedAt > CHAPTER_CACHE_TTL_MS) return null;
     return entry;
   } catch {
     return null;
@@ -306,6 +335,35 @@ export function saveChapterCache(chapterUrl: string, data: Omit<ChapterCache, "c
     localStorage.setItem(CHAPTER_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
   } catch {
     // Quota exceeded — silently ignore
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-chapter scroll position — separate key so it doesn't pollute sync payload
+// ---------------------------------------------------------------------------
+
+const CHAPTER_SCROLL_KEY = "linovelib-chapter-scroll";
+const MAX_CHAPTER_SCROLL = 200;
+
+export function saveChapterScroll(chapterUrl: string, pct: number): void {
+  if (typeof window === "undefined" || !chapterUrl) return;
+  try {
+    const raw = JSON.parse(localStorage.getItem(CHAPTER_SCROLL_KEY) ?? "{}") as Record<string, { pct: number; savedAt: number }>;
+    raw[chapterUrl] = { pct, savedAt: Date.now() };
+    const entries = Object.entries(raw)
+      .sort((a, b) => b[1].savedAt - a[1].savedAt)
+      .slice(0, MAX_CHAPTER_SCROLL);
+    localStorage.setItem(CHAPTER_SCROLL_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch { /* ignore */ }
+}
+
+export function getChapterScroll(chapterUrl: string): number {
+  if (typeof window === "undefined" || !chapterUrl) return 0;
+  try {
+    const raw = JSON.parse(localStorage.getItem(CHAPTER_SCROLL_KEY) ?? "{}") as Record<string, { pct: number; savedAt: number }>;
+    return raw[chapterUrl]?.pct ?? 0;
+  } catch {
+    return 0;
   }
 }
 

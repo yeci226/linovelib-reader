@@ -14,25 +14,23 @@ async function deploy() {
     let projectDir = '/Users/yeci/Desktop/linovelib-reader';
     console.log(`Deploying to ${projectDir}...`);
     
-    const localDirs = ['app', 'components', 'lib'];
+    const localDirs = ['backend'];
     for (const dir of localDirs) {
       console.log(`Uploading ${dir}...`);
       await ssh.putDirectory(path.join(__dirname, dir), `${projectDir}/${dir}`, {
         recursive: true,
-        concurrency: 10
+        concurrency: 10,
+        validate: (itemPath) => !itemPath.includes('node_modules')
       });
     }
 
-    console.log('Uploading package.json...');
-    await ssh.putFile(path.join(__dirname, 'package.json'), `${projectDir}/package.json`);
-
-    console.log('Running npm install and restarting...');
+    console.log('Running yarn install and restarting backend...');
     const cmds = [
       `export PATH=$PATH:/usr/local/bin:~/.nvm/versions/node/v20.9.0/bin:~/.npm-global/bin:/opt/homebrew/bin`,
-      `cd ${projectDir}`,
-      `npm install`,
-      `npm run build`,
-      `pm2 restart linovelib-server || pm2 start npm --name "linovelib-server" -- run start`
+      `cd ${projectDir}/backend`,
+      `rm -rf node_modules`,
+      `yarn install`,
+      `pm2 restart linovelib-backend || pm2 start server.js --name "linovelib-backend"`
     ];
     
     const res = await ssh.execCommand(cmds.join(' && '));

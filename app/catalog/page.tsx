@@ -2,8 +2,9 @@
 import { useEffect, useState, Suspense, type ReactNode } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { getEntryFor, saveProgress, getCatalogCache, saveCatalogCache, type HistoryEntry, isInBookshelf, addToBookshelf, removeFromBookshelf } from "@/lib/history";
-import { ImagePlaceholderIcon, BookIcon } from "@/components/icons";
+import { getEntryFor, saveProgress, getCatalogCache, saveCatalogCache, type HistoryEntry } from "@/lib/history";
+import { ImagePlaceholderIcon, GalleryIcon } from "@/components/icons";
+import { CommentBoard } from "@/components/CommentBoard";
 
 interface Chapter { title: string; url: string | null }
 interface VolumeGroup {
@@ -12,14 +13,14 @@ interface VolumeGroup {
   chapters: Chapter[];
 }
 
-async function fetchCatalog(url: string): Promise<{ title: string; coverUrl: string; groups: VolumeGroup[] }> {
+async function fetchCatalog(url: string): Promise<{ title: string; coverUrl: string; groups: VolumeGroup[]; author?: string; desc?: string; tags?: string[] }> {
   const res = await fetch(`/api/catalog?url=${encodeURIComponent(url)}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { error?: string }).error || `HTTP ${res.status}`);
   }
-  const data = await res.json() as { title: string; coverUrl: string; volumes: VolumeGroup[] };
-  return { title: data.title, coverUrl: data.coverUrl, groups: data.volumes };
+  const data = await res.json() as { title: string; coverUrl: string; volumes: VolumeGroup[]; author?: string; desc?: string; tags?: string[] };
+  return { title: data.title, coverUrl: data.coverUrl, groups: data.volumes, author: data.author, desc: data.desc, tags: data.tags };
 }
 
 function CatalogContent() {
@@ -41,11 +42,6 @@ function CatalogContent() {
   const [sortDesc, setSortDesc] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const [searchQuery, setSearchQuery] = useState("");
-  const [inBookshelf, setInBookshelf] = useState(false);
-
-  useEffect(() => {
-    if (catalogUrl) setInBookshelf(isInBookshelf(catalogUrl));
-  }, [catalogUrl]);
 
   const lastChapterUrl = entry?.lastChapterUrl ?? null;
   const lastChapterTitle = entry?.lastChapterTitle ?? "";
@@ -54,7 +50,11 @@ function CatalogContent() {
   const allChapters: Chapter[] = groups.flatMap(g => g.chapters);
 
   // Shared logic to apply a fetched catalog to state + persistence
-  function applyParsed(parsed: { title: string; coverUrl: string; groups: VolumeGroup[] }, catUrl: string) {
+  function applyParsed(
+    parsed: { title: string; coverUrl: string; groups: VolumeGroup[]; author?: string; desc?: string; tags?: string[] },
+    catUrl: string,
+    navMeta?: { author?: string; desc?: string; tags?: string[] }
+  ) {
     let cover = parsed.coverUrl;
     if (!cover) {
       const m = catUrl.match(/\/novel\/(\d+)/);
@@ -69,8 +69,16 @@ function CatalogContent() {
     setGroups(parsed.groups);
     document.title = `${parsed.title} — 目錄`;
 
-    // Persist catalog structure for cache-first next visit
-    saveCatalogCache(catUrl, { title: parsed.title, coverUrl: cover, groups: parsed.groups });
+    const navAuthor = navMeta?.author || "";
+    const navDesc = navMeta?.desc || "";
+    const navTags = navMeta?.tags;
+
+    const resolvedAuthor = parsed.author || navAuthor;
+    const resolvedDesc = parsed.desc || navDesc;
+    const resolvedTags = parsed.tags?.length ? parsed.tags : (navTags?.length ? navTags : undefined);
+
+    // Persist catalog structure for cache-first next visit (include metadata for history enrichment)
+    saveCatalogCache(catUrl, { title: parsed.title, coverUrl: cover, author: resolvedAuthor, desc: resolvedDesc, tags: resolvedTags, groups: parsed.groups });
 
     const flat = parsed.groups.flatMap(g => g.chapters);
     const ex = getEntryFor(catUrl);
@@ -78,8 +86,12 @@ function CatalogContent() {
       catalogUrl: catUrl,
       novelTitle: parsed.title,
       coverUrl: cover,
-      lastChapterUrl: ex?.lastChapterUrl || (flat[0]?.url ?? ""),
-      lastChapterTitle: ex?.lastChapterTitle || (flat[0]?.title ?? ""),
+      author: resolvedAuthor || ex?.author,
+      desc: resolvedDesc || ex?.desc,
+      tags: resolvedTags?.length ? resolvedTags : ex?.tags,
+      // Only keep an existing lastChapterUrl; never pre-fill with first chapter
+      lastChapterUrl: ex?.lastChapterUrl ?? "",
+      lastChapterTitle: ex?.lastChapterTitle ?? "",
       lastChapterIndex: ex?.lastChapterIndex ?? 0,
       totalChapters: flat.length,
       updatedAt: ex?.updatedAt ?? Date.now(),
@@ -94,13 +106,56 @@ function CatalogContent() {
     const existing = getEntryFor(catalogUrl);
     if (existing) setEntry(existing);
 
+    // Consume navItemMeta BEFORE the cache-check branch so the metadata is
+    // always applied even when the catalog is served from cache.
+    // (handleNav on the discover/ranking page saves author/desc/tags here.)
+    let navMeta: { author?: string; desc?: string; tags?: string[] } | undefined;
+    try {
+      const raw = sessionStorage.getItem("navItemMeta");
+      if (raw) {
+        const m = JSON.parse(raw) as { url: string; author?: string; desc?: string; tags?: string[] };
+        if (m.url === catalogUrl) {
+          navMeta = { author: m.author, desc: m.desc, tags: m.tags };
+          sessionStorage.removeItem("navItemMeta");
+        }
+      }
+    } catch { /* ignore */ }
+
     const cached = getCatalogCache(catalogUrl);
     if (cached) {
+      // If we have fresh card metadata, enrich the history entry and catalog cache now.
+      if (navMeta && (navMeta.author || navMeta.desc || navMeta.tags?.length)) {
+        const enriched: HistoryEntry = {
+          catalogUrl,
+          novelTitle: existing?.novelTitle || cached.title,
+          coverUrl: existing?.coverUrl || cached.coverUrl,
+          author: existing?.author || navMeta.author,
+          desc: existing?.desc || navMeta.desc,
+          tags: existing?.tags?.length ? existing.tags : navMeta.tags,
+          lastChapterUrl: (existing?.lastChapterUrl && existing.lastChapterUrl !== "null") ? existing.lastChapterUrl : "",
+          lastChapterTitle: existing?.lastChapterTitle ?? "",
+          lastChapterIndex: existing?.lastChapterIndex ?? 0,
+          totalChapters: existing?.totalChapters ?? 0,
+          updatedAt: existing?.updatedAt ?? Date.now(),
+          visitedChapters: existing?.visitedChapters ?? {},
+          lastScrollPct: existing?.lastScrollPct,
+        };
+        saveProgress(enriched);
+        setEntry(enriched);
+        saveCatalogCache(catalogUrl, {
+          title: cached.title,
+          coverUrl: cached.coverUrl,
+          author: cached.author || navMeta.author,
+          desc: cached.desc || navMeta.desc,
+          tags: cached.tags?.length ? cached.tags : navMeta.tags,
+          groups: cached.groups as VolumeGroup[],
+        });
+      }
       // Already shown synchronously — background-refresh if older than 4 hours or missing title
-      const REFRESH_INTERVAL = 4 * 60 * 60 * 1000; // 4 hours
+      const REFRESH_INTERVAL = 4 * 60 * 60 * 1000;
       if (Date.now() - cached.cachedAt > REFRESH_INTERVAL || cached.title === "未知小說") {
         fetchCatalog(catalogUrl)
-          .then(parsed => applyParsed(parsed, catalogUrl))
+          .then(parsed => applyParsed(parsed, catalogUrl, navMeta))
           .catch(() => {});
       }
       return;
@@ -108,7 +163,7 @@ function CatalogContent() {
 
     // No cache — fetch now (loading spinner already showing)
     fetchCatalog(catalogUrl)
-      .then(parsed => applyParsed(parsed, catalogUrl))
+      .then(parsed => applyParsed(parsed, catalogUrl, navMeta))
       .catch(e => setError(String(e)))
       .finally(() => setLoading(false));
   }, [catalogUrl]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -143,11 +198,14 @@ function CatalogContent() {
 
   const displayGroups = sortDesc ? [...groups].reverse() : groups;
 
+  const validLastChapterUrl = lastChapterUrl && lastChapterUrl !== "null" ? lastChapterUrl : "";
+
   // Search: flat list of {chapter, volTitle} matching query (chapter title OR volume title)
-  const isSearching = searchQuery.trim().length > 0;
+  const trimmedQuery = searchQuery.trim();
+  const isSearching = trimmedQuery.length > 0;
   const searchResults: { ch: Chapter; volTitle: string; volMatch: boolean }[] = isSearching
     ? groups.flatMap(g => {
-        const q = searchQuery.toLowerCase();
+        const q = trimmedQuery.toLowerCase();
         const volMatch = g.volTitle.toLowerCase().includes(q);
         return g.chapters
           .filter(ch => volMatch || ch.title.toLowerCase().includes(q))
@@ -170,26 +228,11 @@ function CatalogContent() {
     );
   }
 
-  const handleBookshelfToggle = () => {
-    if (inBookshelf) {
-      removeFromBookshelf(catalogUrl);
-      setInBookshelf(false);
-    } else {
-      addToBookshelf({
-        catalogUrl,
-        novelTitle: title,
-        coverUrl,
-        totalChapters
-      });
-      setInBookshelf(true);
-    }
-  };
-
   return (
     <main style={{ minHeight: "100vh" }}>
       {/* Sticky header */}
       <div style={{ position: "sticky", top: 0, zIndex: 10, background: "var(--bg)", borderBottom: "1px solid var(--border)", padding: "16px 20px" }}>
-        <button onClick={() => router.back()} style={{ fontSize: 12, color: "var(--text-muted)", background: "none", border: "none", display: "flex", alignItems: "center", gap: 5, marginBottom: 14 }}>
+        <button onClick={() => { if (window.history.length > 1) { router.back(); } else { router.push("/"); } }} style={{ fontSize: 12, color: "var(--text-muted)", background: "none", border: "none", display: "flex", alignItems: "center", gap: 5, marginBottom: 14 }}>
           ← 返回
         </button>
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
@@ -203,8 +246,21 @@ function CatalogContent() {
             )}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 17, fontWeight: 700, color: "var(--text)", lineHeight: 1.35, marginBottom: 6 }}>{title}</div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "var(--text)", lineHeight: 1.35, marginBottom: 4 }}>{title}</div>
+            
+            {entry?.author && (
+              <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8 }}>
+                作者：<span style={{ color: "var(--accent)" }}>{entry.author}</span>
+              </div>
+            )}
+            
+            {entry?.desc && (
+              <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden", marginBottom: 12 }}>
+                {entry.desc}
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.7 }}>
                 共 {totalChapters} 章
                 {visitedCount > 0 && <> · 已看 {visitedCount} 章</>}
@@ -220,30 +276,20 @@ function CatalogContent() {
                     transition: "all .15s"
                   }}
                 >
-                  🖼️ 畫廊
-                </button>
-                <button 
-                  onClick={handleBookshelfToggle}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    background: inBookshelf ? "transparent" : "var(--accent)",
-                    color: inBookshelf ? "var(--text-muted)" : "#0a0a0d",
-                    border: inBookshelf ? "1px solid var(--border)" : "none",
-                    borderRadius: 4,
-                    padding: "4px 10px",
-                    fontSize: 12,
-                    fontWeight: inBookshelf ? 400 : 700,
-                    cursor: "pointer",
-                    transition: "all .15s"
-                  }}
-                >
-                  <BookIcon style={{ fontSize: 14 }} />
-                  {inBookshelf ? "已在書架" : "加入書架"}
+                  <GalleryIcon style={{ fontSize: 14 }} /> 全部插畫
                 </button>
               </div>
             </div>
+            
+            {entry?.tags && entry.tags.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {entry.tags.map(tag => (
+                  <span key={tag} style={{ fontSize: 10, background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-dim)", padding: "2px 6px", borderRadius: 4 }}>
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -254,10 +300,10 @@ function CatalogContent() {
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "20px 0 16px", borderBottom: "1px solid var(--border)", marginBottom: 8 }}>
 
           {/* Last visited */}
-          {lastChapterUrl && lastChapterTitle && (
+          {validLastChapterUrl && lastChapterTitle && (
             <div
               style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
-              onClick={() => router.push(`/read?url=${encodeURIComponent(lastChapterUrl)}&catalog=${encodeURIComponent(catalogUrl)}`)}
+              onClick={() => router.push(`/read?url=${encodeURIComponent(validLastChapterUrl)}&catalog=${encodeURIComponent(catalogUrl)}`)}
             >
               <span style={{ fontSize: 10, fontWeight: 700, background: "var(--accent)", color: "#0a0a0d", padding: "2px 7px", borderRadius: 3, whiteSpace: "nowrap" }}>上次看到</span>
               <span style={{ fontSize: 13, color: "var(--accent)", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lastChapterTitle}</span>
@@ -301,60 +347,93 @@ function CatalogContent() {
         </div>
         {isSearching ? (
           /* ── Search results view ── */
-          searchResults.length === 0 ? (
-            <div style={{ paddingTop: 40, textAlign: "center", color: "var(--text-muted)", fontSize: 14 }}>沒有符合的章節</div>
-          ) : (
-            searchResults.map(({ ch, volTitle, volMatch }) => {
-              const isLast = !!ch.url && ch.url === lastChapterUrl;
-              const isVisited = !!ch.url && !!visitedChapters[ch.url];
-              const isLocked = !ch.url;
-              const volLabel = volMatch
-                ? <span style={{ fontSize: 10, color: "var(--text-dim)", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 6px", whiteSpace: "nowrap", flexShrink: 0, marginRight: isLast ? 6 : 0 }}>
-                    {highlightMatch(volTitle || "章節列表", searchQuery)}
-                  </span>
-                : <span style={{ fontSize: 10, color: "var(--text-dim)", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 6px", whiteSpace: "nowrap", flexShrink: 0, marginRight: isLast ? 6 : 0 }}>
-                    {volTitle || "章節列表"}
-                  </span>;
-              const srStyle: React.CSSProperties = {
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: "9px 8px", borderRadius: 7, gap: 10,
-                transition: "background .12s",
-                background: isLast ? "rgba(200,169,110,.06)" : "",
-                border: isLast ? "1px solid rgba(200,169,110,.18)" : "1px solid transparent",
-                opacity: isLocked ? 0.45 : 1, cursor: isLocked ? "default" : "pointer",
-              };
-              const srInner = (
-                <>
-                  <span style={{ fontSize: 14, color: isVisited && !isLast ? "var(--text-muted)" : "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {highlightMatch(ch.title, searchQuery)}
-                  </span>
-                  {volLabel}
-                  {isLocked ? (
-                    <span style={{ fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>🔒</span>
-                  ) : isLast ? (
-                    <span style={{ fontSize: 10, fontWeight: 700, background: "var(--accent)", color: "#0a0a0d", padding: "2px 7px", borderRadius: 3, whiteSpace: "nowrap", flexShrink: 0 }}>
-                      上次看到
+          <>
+            {searchResults.length === 0 ? (
+              <div style={{ paddingTop: 40, textAlign: "center", color: "var(--text-muted)", fontSize: 14 }}>沒有符合的章節</div>
+            ) : (
+              searchResults.map(({ ch, volTitle, volMatch }) => {
+                const isLast = !!ch.url && ch.url === lastChapterUrl;
+                const isVisited = !!ch.url && !!visitedChapters[ch.url];
+                const volLabel = volMatch
+                  ? <span style={{ fontSize: 10, color: "var(--text-dim)", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 6px", whiteSpace: "nowrap", flexShrink: 0, marginRight: isLast ? 6 : 0 }}>
+                      {highlightMatch(volTitle || "章節列表", trimmedQuery)}
                     </span>
-                  ) : (
-                    <span style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: isVisited ? "var(--border)" : "var(--accent)", display: "inline-block" }} />
-                  )}
-                </>
-              );
-              return isLocked ? (
-                <div key={ch.title} id={`ch-locked-${ch.title}`} style={srStyle}>{srInner}</div>
-              ) : (
+                  : <span style={{ fontSize: 10, color: "var(--text-dim)", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 6px", whiteSpace: "nowrap", flexShrink: 0, marginRight: isLast ? 6 : 0 }}>
+                      {volTitle || "章節列表"}
+                    </span>;
+                const srStyle: React.CSSProperties = {
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "9px 8px", borderRadius: 7, gap: 10,
+                  transition: "background .12s",
+                  background: isLast ? "rgba(200,169,110,.06)" : "",
+                  border: isLast ? "1px solid rgba(200,169,110,.18)" : "1px solid transparent",
+                  cursor: "pointer",
+                };
+                const srInner = (
+                  <>
+                    <span style={{ fontSize: 14, color: isVisited && !isLast ? "var(--text-muted)" : "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {highlightMatch(ch.title, trimmedQuery)}
+                    </span>
+                    {volLabel}
+                    {isLast ? (
+                      <span style={{ fontSize: 10, fontWeight: 700, background: "var(--accent)", color: "#0a0a0d", padding: "2px 7px", borderRadius: 3, whiteSpace: "nowrap", flexShrink: 0 }}>
+                        上次看到
+                      </span>
+                    ) : (
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: isVisited ? "var(--border)" : "var(--accent)", display: "inline-block" }} />
+                    )}
+                  </>
+                );
+                const chKey = ch.url || `locked-${volTitle}-${ch.title}`;
+                if (!ch.url || ch.url === "null") {
+                  return (
+                    <div
+                      key={chKey}
+                      id={`ch-${chKey}`}
+                      onClick={() => alert("此章節似乎無法讀取或已鎖定！")}
+                      style={{ ...srStyle, opacity: 0.5, cursor: "not-allowed" }}
+                    >{srInner}</div>
+                  );
+                }
+                return (
+                  <Link
+                    key={chKey}
+                    id={`ch-${chKey}`}
+                    prefetch={false}
+                    href={`/read?url=${encodeURIComponent(ch.url!)}&catalog=${encodeURIComponent(catalogUrl)}`}
+                    style={srStyle}
+                    onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
+                    onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
+                  >{srInner}</Link>
+                );
+              })
+            )}
+            {/* ── Last-read chapter pinned below search results ── */}
+            {validLastChapterUrl && lastChapterTitle && !searchResults.some(r => r.ch.url === validLastChapterUrl) && (
+              <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 8 }}>上次閱讀位置</div>
                 <Link
-                  key={ch.url}
-                  id={`ch-${ch.url}`}
                   prefetch={false}
-                  href={`/read?url=${encodeURIComponent(ch.url!)}&catalog=${encodeURIComponent(catalogUrl)}`}
-                  style={srStyle}
-                  onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
-                  onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
-                >{srInner}</Link>
-              );
-            })
-          )
+                  href={`/read?url=${encodeURIComponent(validLastChapterUrl)}&catalog=${encodeURIComponent(catalogUrl)}`}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    padding: "9px 8px", borderRadius: 7,
+                    background: "rgba(200,169,110,.06)",
+                    border: "1px solid rgba(200,169,110,.18)",
+                    cursor: "pointer", textDecoration: "none",
+                    transition: "background .12s",
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.background = "rgba(200,169,110,.12)"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.background = "rgba(200,169,110,.06)"; }}
+                >
+                  <span style={{ fontSize: 14, color: "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lastChapterTitle}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, background: "var(--accent)", color: "#0a0a0d", padding: "2px 7px", borderRadius: 3, whiteSpace: "nowrap", flexShrink: 0 }}>
+                    上次看到
+                  </span>
+                </Link>
+              </div>
+            )}
+          </>
         ) : (
           displayGroups.map((group, gi) => {
           const originalGi = sortDesc ? groups.length - 1 - gi : gi;
@@ -394,7 +473,6 @@ function CatalogContent() {
                      {chaptersToShow.map((ch, ci) => {
                        const isLast = !!ch.url && ch.url === lastChapterUrl;
                        const isVisited = !!ch.url && !!visitedChapters[ch.url];
-                       const isLocked = !ch.url;
                        const chKey = ch.url || `locked-${ci}`;
                        const chStyle: React.CSSProperties = {
                          display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -402,17 +480,14 @@ function CatalogContent() {
                          transition: "background .12s",
                          background: isLast ? "rgba(200,169,110,.06)" : "",
                          border: isLast ? "1px solid rgba(200,169,110,.18)" : "1px solid transparent",
-                         opacity: isLocked ? 0.45 : 1,
-                         cursor: isLocked ? "default" : "pointer",
+                         cursor: "pointer",
                        };
                        const inner = (
                          <>
                            <span style={{ fontSize: 14, color: isVisited && !isLast ? "var(--text-muted)" : "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                              {ch.title}
                            </span>
-                           {isLocked ? (
-                             <span style={{ fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>🔒</span>
-                           ) : isLast ? (
+                           {isLast ? (
                              <span style={{ fontSize: 10, fontWeight: 700, background: "var(--accent)", color: "#0a0a0d", padding: "2px 7px", borderRadius: 3, whiteSpace: "nowrap", flexShrink: 0 }}>
                                上次看到
                              </span>
@@ -421,9 +496,17 @@ function CatalogContent() {
                            )}
                          </>
                        );
-                       return isLocked ? (
-                         <div key={chKey} id={`ch-${chKey}`} style={chStyle}>{inner}</div>
-                       ) : (
+                       if (!ch.url || ch.url === "null") {
+                         return (
+                           <div
+                             key={chKey}
+                             id={`ch-${chKey}`}
+                             onClick={() => alert("此章節似乎無法讀取或已鎖定！")}
+                             style={{ ...chStyle, opacity: 0.5, cursor: "not-allowed" }}
+                           >{inner}</div>
+                         );
+                       }
+                       return (
                          <Link
                            key={chKey}
                            id={`ch-${chKey}`}
@@ -441,6 +524,18 @@ function CatalogContent() {
             </div>
           );
         })
+        )}
+
+        {!isSearching && (
+          <div style={{ marginTop: 40, paddingBottom: 40 }}>
+            <CommentBoard 
+              title="小說書評區" 
+              apiEndpoint={`/api/reviews?catalogUrl=${encodeURIComponent(catalogUrl)}`}
+              postEndpoint="/api/reviews"
+              payloadKey="catalogUrl"
+              payloadValue={catalogUrl}
+            />
+          </div>
         )}
       </div>
     </main>

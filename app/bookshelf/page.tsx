@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { loadBookshelf, BookshelfEntry, removeFromBookshelf } from "@/lib/history";
-import { ImagePlaceholderIcon } from "@/components/icons";
+import { ImagePlaceholderIcon, CloseIcon } from "@/components/icons";
 
 interface BookshelfItem extends BookshelfEntry {
   hasUpdate?: boolean;
@@ -97,7 +97,7 @@ export default function BookshelfPage() {
                   onClick={(e) => handleRemove(e, item.catalogUrl)}
                   style={{ position: "absolute", bottom: 6, right: 6, background: "rgba(0,0,0,0.6)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "50%", width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}
                 >
-                  ✕
+                  <CloseIcon style={{ fontSize: 14 }} />
                 </button>
               </div>
               <div>

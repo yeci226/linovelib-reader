@@ -5,6 +5,15 @@ export function getAuthToken(): string | null {
   return localStorage.getItem("linovelib-token");
 }
 
+export function getUsernameFromToken(t: string | null): string {
+  if (!t) return "User";
+  try {
+    return JSON.parse(atob(t.split('.')[1])).username || "User";
+  } catch {
+    return "User";
+  }
+}
+
 export function setAuthToken(token: string | null) {
   if (typeof window === "undefined") return;
   if (token) localStorage.setItem("linovelib-token", token);
@@ -26,7 +35,7 @@ export function triggerSyncPush() {
       const bookshelf = loadBookshelf();
       const settings = loadSettings();
 
-      await fetch("/api/sync/push", {
+      const res = await fetch("/api/sync/push", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -34,6 +43,10 @@ export function triggerSyncPush() {
         },
         body: JSON.stringify({ history, bookmarks, bookshelf, settings })
       });
+      const data = await res.json();
+      if (data.mergedHistory) {
+        save(data.mergedHistory, true);
+      }
     } catch (e) {
       // silently ignore sync errors in background
     }

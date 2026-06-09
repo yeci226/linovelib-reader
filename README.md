@@ -1,76 +1,118 @@
-# linovelib-reader
+# 📖 Linovelib Reader (輕小說閱讀器)
 
-部署在 Vercel 的輕小說閱讀器。讀 [linovelib.com](https://www.linovelib.com/) 系列站點。
+> 專為極致閱讀體驗打造的第三方輕小說閱讀器，採用最新的分離式架構（Next.js 邊緣渲染 + Playwright 獨立抓取伺服器），徹底解決 Cloudflare 驗證與 Vercel 唯讀資料庫限制。
 
-## 架構
+![【請替換】專案首頁預覽圖](https://placehold.co/1200x400/1e1e2e/cdd6f4?text=Linovelib+Reader+Preview+Image&font=Montserrat)
 
+---
+
+## ✨ 核心特色
+
+- **🚀 零 Cloudflare 阻擋**：後端採用 Playwright 模擬真實瀏覽器抓取，無痛繞過所有的防機器人驗證。
+- **📚 完美的快取機制**：使用 `better-sqlite3` 將所有小說目錄、章節、圖片快取至後端伺服器，大幅降低目標網站的請求頻率，並解決 Serverless (如 Vercel) 的唯讀檔案系統限制。
+- **⚡ 極速前端渲染**：前端採用 Next.js，所有 API 皆為輕量級 Proxy，減少前端伺服器的負擔。
+- **📱 響應式設計**：完美支援手機與桌面端閱讀。
+
+---
+
+## 🏛️ 系統架構 (Architecture)
+
+本專案採用 **分離式架構 (Decoupled Architecture)**：
+
+```mermaid
+graph LR
+    A[使用者 (Browser)] -->|瀏覽小說| B(Next.js 前端 - Vercel)
+    B -->|Proxy 轉發| C{Server API - 獨立 VPS}
+    C -->|讀寫快取| D[(SQLite - reader.db)]
+    C -->|Playwright 抓取| E[Linovelib 網站]
+    
+    style B fill:#000000,stroke:#ffffff,stroke-width:2px,color:#ffffff
+    style C fill:#2E8B57,stroke:#ffffff,stroke-width:2px,color:#ffffff
+    style D fill:#4682B4,stroke:#ffffff,stroke-width:2px,color:#ffffff
 ```
-Browser ──→ Vercel (Next.js)
-              ├─ /api/proxy ─┬─ Mac backend (Playwright + CF Tunnel)   [primary, 可選]
-              │               └─ CORS proxies (allorigins / corsproxy)  [fallback]
-              ├─ /api/catalog
-              ├─ /api/chapter
-              └─ localStorage cache (章節 7 天 / 目錄 24h)
-```
 
-### 為什麼需要 Mac 後端？
+> [!NOTE]
+> **為何需要這樣設計？**
+> Next.js 若部署於 Vercel，其檔案系統是**唯讀的 (Read-only)**。若在前端直接爬取並寫入 SQLite 會引發 `SqliteError: attempt to write a readonly database`。因此我們將**抓取 (Playwright)** 與 **儲存 (SQLite)** 統一交由你具備寫入權限的 `backend/server.js` 處理。
 
-linovelib 對未驗證的 HTTP 請求只回傳前 ~30 段加上 `（內容加載失敗！請重載或更換瀏覽器）` 佔位符，
-真實內容由 Cloudflare 驗證後的瀏覽器 JS 才會渲染出來。CORS proxy 通不過 CF 驗證。
+---
 
-- **Mac backend**（`backend/`）跑 Playwright + stealth 真實 Chromium，能拿到完整內容
-- 透過 **Cloudflare Tunnel** 暴露給 Vercel，零成本、固定域名
-- 如果 Mac 關機或未設定，自動 fallback 到 CORS proxy（部分章節仍能讀到，但截斷的會缺後半段）
+## 🖼️ 畫面預覽 (Screenshots)
 
-設定步驟見 [`backend/README.md`](./backend/README.md)。
+````carousel
+![【請替換】探索頁面截圖](https://placehold.co/800x500/1e1e2e/cdd6f4?text=Explore+Page+Screenshot)
+<!-- slide -->
+![【請替換】小說目錄頁面截圖](https://placehold.co/800x500/1e1e2e/cdd6f4?text=Catalog+Page+Screenshot)
+<!-- slide -->
+![【請替換】閱讀器介面截圖](https://placehold.co/800x500/1e1e2e/cdd6f4?text=Reader+Interface+Screenshot)
+````
 
-## 本機開發
+---
+
+## 🚀 部署與啟動指南
+
+### 1. 啟動後端抓取伺服器 (Server API)
+
+後端伺服器負責所有繁重的爬蟲與資料庫寫入工作。建議將其部署在具有寫入權限的 VPS（例如 Ubuntu、Debian）或你本地的電腦。
+
+> [!WARNING]
+> 請確保你的伺服器環境已安裝 Node.js 18+。
 
 ```bash
-npm install
-npm run dev
-# http://localhost:3000
+cd backend
+yarn install
+
+# 確保已安裝 Playwright 所需的瀏覽器
+npx playwright install chromium
+
+# 複製並設定環境變數
+cp .env.example .env
+# 請編輯 .env 檔案，設定好你的 AUTH_TOKEN 與 PORT
 ```
 
-## 部署到 Vercel
+啟動後端：
+```bash
+yarn start
+```
+*(預設將運行於 `http://localhost:3001`)*
+
+### 2. 啟動 Next.js 前端
+
+前端可以部署在任何地方，包含 Vercel。
 
 ```bash
-vercel --prod --yes
+yarn install
 ```
 
-### 環境變數（在 Vercel Dashboard 或 `vercel env add`）
+建立 `.env.local` 檔案並填入以下內容，讓前端知道要去哪裡尋找後端：
+```env
+# 指向你的 Server API 位址 (如果是本地測試，請填 http://localhost:3001)
+BACKEND_URL=http://localhost:3001
 
-| 變數 | 必填 | 說明 |
-|---|---|---|
-| `BACKEND_URL` | 否 | Mac backend 的 Cloudflare Tunnel URL，例如 `https://linovelib-backend.yeci.lol`。**不要加結尾斜線**。未設則只用 CORS proxy。 |
-| `BACKEND_TOKEN` | 否 | 對應 `backend/.env` 裡的 `AUTH_TOKEN`，bearer 驗證用。 |
+# 必須與後端 .env 中的 AUTH_TOKEN 完全一致
+AUTH_TOKEN=your_secure_auth_token_here
+```
 
-設定範例：
+啟動前端開發伺服器：
 ```bash
-vercel env add BACKEND_URL production
-# https://linovelib-backend.yeci.lol
-vercel env add BACKEND_TOKEN production
-# <貼上 backend 那邊的 AUTH_TOKEN>
-vercel --prod --yes
+yarn dev
 ```
 
-## 快取行為
+---
 
-- `localStorage`：
-  - `linovelib-catalog-cache`：目錄 TTL 24h
-  - `linovelib-chapter-cache`：章節 TTL 7d
-  - `linovelib-history`、`linovelib-bookmarks`：閱讀進度 / 書籤
-- Server 端：`/api/proxy` in-memory cache TTL 24h（per-deployment）
+## 🛡️ Vercel 部署注意事項
 
-## 驗證
+若你要將前端部署至 Vercel，請務必在 Vercel 的專案設定面板 (Settings -> Environment Variables) 中新增以下變數：
 
-```bash
-# 走 backend（若設定）+ fallback
-curl -I "https://your-domain.vercel.app/api/proxy?url=https://tw.linovelib.com/novel/2139/156938.html"
-# 看 X-Proxy-Source header：backend / cors-proxy / none
-```
+- `BACKEND_URL`：填入你 VPS 或 Cloudflare Tunnel 暴露出來的後端網址（結尾**不要**加斜線，例如 `https://api.yourdomain.com`）。
+- `AUTH_TOKEN`：填入你的驗證密鑰。
 
-## 相關專案
+> [!IMPORTANT]
+> 前端 API 路由 (`/api/discover/*`, `/api/catalog`, `/api/chapter` 等) 現已全部改為純 Proxy，Vercel 部署後將不再遇到唯讀資料庫報錯。
 
-- [biliNovel2Epub](https://github.com/fangxx3863/biliNovel2Epub)
-- [linovelib2epub](https://github.com/lightnovel-center/linovelib2epub) — 桌面端 Python 版，用 DrissionPage + OCR；本專案後端思路參考自此
+---
+
+## 🤝 貢獻與鳴謝
+
+- 爬蟲策略參考了 [biliNovel2Epub](https://github.com/fangxx3863/biliNovel2Epub) 等優秀開源專案。
+- 專案採用 Next.js App Router 與 Fastify 構建。
