@@ -79,6 +79,7 @@ async function prefetchNextChapter(url: string, catalogUrl: string): Promise<voi
         subtitle: "",
         nodes: contentToNodes(result.content),
         nextChapterUrl: result.nextChapterUrl,
+        prevChapterUrl: result.prevChapterUrl,
       });
       prefetchStore.delete(url); // full cache covers it now
     }
@@ -352,16 +353,19 @@ function ReadContent() {
     if (loading || loadingMore) return;
     const pct = pendingRestoreRef.current;
     if (pct > 0) {
-      pendingRestoreRef.current = 0;
-      window.scrollTo({
-        top: (pct / 100) * (document.body.scrollHeight - window.innerHeight),
-        behavior: "instant",
-      });
+      setTimeout(() => {
+        pendingRestoreRef.current = 0;
+        window.scrollTo({
+          top: (pct / 100) * (document.body.scrollHeight - window.innerHeight),
+          behavior: "instant",
+        });
+        setRestoringPosition(false);
+      }, 100);
     } else {
       window.scrollTo({ top: 0, behavior: "instant" });
+      setRestoringPosition(false);
     }
-    setRestoringPosition(false);
-  }, [loading, loadingMore]);
+  }, [loading, loadingMore, restoringPosition]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -419,6 +423,8 @@ function ReadContent() {
         setLoading(false);
         setNextUrl(cached.nextChapterUrl);
         setNextTitle(cached.nextChapterUrl ? resolveChapterTitle(catalogUrl, cached.nextChapterUrl) : "");
+        setPrevUrl(cached.prevChapterUrl || null);
+        setPrevTitle(cached.prevChapterUrl ? resolveChapterTitle(catalogUrl, cached.prevChapterUrl) : "");
         setPageCount(1);
         if (cached.nextChapterUrl) {
           prefetchNextChapter(cached.nextChapterUrl, catalogUrl);
@@ -495,6 +501,7 @@ function ReadContent() {
           subtitle: "",
           nodes: firstNodes,
           nextChapterUrl: data.nextChapterUrl,
+          prevChapterUrl: data.prevChapterUrl,
         });
         if (data.nextChapterUrl) {
           prefetchNextChapter(data.nextChapterUrl, catalogUrl);
@@ -534,6 +541,7 @@ function ReadContent() {
               subtitle: "",
               nodes: allNodes,
               nextChapterUrl: pageData.nextChapterUrl,
+              prevChapterUrl: data.prevChapterUrl,
             });
             if (pageData.nextChapterUrl) {
               prefetchNextChapter(pageData.nextChapterUrl, catalogUrl);
@@ -660,12 +668,12 @@ function ReadContent() {
 
       {/* Toolbar */}
       <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 50, background: "linear-gradient(to bottom, var(--bg) 80%, transparent)", padding: "12px 20px 32px", opacity: showUI ? 1 : 0, transform: showUI ? "translateY(0)" : "translateY(-100%)", transition: "all 0.3s ease", pointerEvents: showUI ? "all" : "none" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <div style={{ display: "flex", gap: 6 }}>
             <button onClick={goBack} style={btnStyle}>← 返回</button>
             <button onClick={() => setDrawerOpen(true)} style={btnStyle}>三 目錄</button>
           </div>
-          <div style={{ display: "flex", gap: 6 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             <button onClick={() => setFontSize(f => Math.max(14, f - 1))} style={btnStyle}>A−</button>
             <button onClick={() => setFontSize(f => Math.min(26, f + 1))} style={btnStyle}>A+</button>
             <button onClick={cycleFontFamily} style={btnStyle} title="切換字體">{fontLabel}</button>
@@ -764,7 +772,7 @@ function ReadContent() {
               title="章節留言板" 
               apiEndpoint={`/api/comments?chapterUrl=${encodeURIComponent(chapterUrl)}`}
               postEndpoint="/api/comments"
-              payloadKey="chapterUrl"
+              payloadKey="chapter_url"
               payloadValue={chapterUrl}
             />
           </div>

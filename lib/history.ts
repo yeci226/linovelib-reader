@@ -326,6 +326,7 @@ export type ChapterCache = {
   subtitle: string;
   nodes: ContentNode[];
   nextChapterUrl: string | null;
+  prevChapterUrl?: string | null;
   cachedAt: number;
 };
 
