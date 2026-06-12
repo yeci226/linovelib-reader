@@ -230,7 +230,25 @@ export function addBookmark(b: Omit<Bookmark, "id" | "createdAt">): Bookmark {
   let all = loadBookmarks();
   
   if (bm.isAuto) {
-    // For auto bookmarks, overwrite the existing auto bookmark for the same novel
+    // Check if there is an existing auto bookmark for this novel
+    const existingIndex = all.findIndex(existing => existing.isAuto && existing.catalogUrl === bm.catalogUrl);
+    if (existingIndex !== -1) {
+      const existing = all[existingIndex];
+      // If we're in the same chapter, and the new position is far from the old one,
+      // create a fallback bookmark to prevent accidental scroll loss
+      if (existing.chapterUrl === bm.chapterUrl && Math.abs(existing.scrollPct - bm.scrollPct) > 15) {
+        const fallbackBm: Bookmark = {
+          ...existing,
+          id: Date.now().toString() + "-fallback",
+          chapterTitle: `[防誤觸] 原位置 ${existing.scrollPct}%`,
+          isAuto: false, // make it manual so it persists
+        };
+        // Clean up previous fallback bookmarks for this chapter
+        all = all.filter(b => !(b.chapterUrl === bm.chapterUrl && b.chapterTitle.startsWith("[防誤觸]")));
+        all.push(fallbackBm);
+      }
+    }
+    // Remove the old auto bookmark
     all = all.filter(existing => !(existing.isAuto && existing.catalogUrl === bm.catalogUrl));
   }
   

@@ -156,6 +156,7 @@ function ReadContent() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [pageCount, setPageCount] = useState(0);
   const loadingChapterRef = useRef<string | null>(null); // tracks which chapterUrl is currently loading
+  const [restoringPosition, setRestoringPosition] = useState(false);
 
   // Theme
   const [theme, setTheme] = useState<Theme>(() => {
@@ -270,7 +271,7 @@ function ReadContent() {
 
   // Auto-save scroll progress & auto bookmark
   useEffect(() => {
-    if (!catalogUrl || loading || !title || progress === 0) return;
+    if (!catalogUrl || loading || loadingMore || !title || progress === 0) return;
     const timeout = setTimeout(() => {
       saveScrollProgress(catalogUrl, progress);
       if (chapterUrl) {
@@ -285,9 +286,9 @@ function ReadContent() {
         });
         setBookmarks(getBookmarksForChapter(chapterUrl));
       }
-    }, 5000);
+    }, 10000);
     return () => clearTimeout(timeout);
-  }, [progress, catalogUrl, chapterUrl, loading, title]);
+  }, [progress, catalogUrl, chapterUrl, loading, loadingMore, title]);
 
   // Word count reporting
   const reportedWordsRef = useRef<Set<string>>(new Set());
@@ -359,6 +360,7 @@ function ReadContent() {
     } else {
       window.scrollTo({ top: 0, behavior: "instant" });
     }
+    setRestoringPosition(false);
   }, [loading, loadingMore]);
 
   // Keyboard navigation
@@ -403,6 +405,9 @@ function ReadContent() {
     window.scrollTo(0, 0);
     // Store the saved scroll position; the restoration effect fires once loading is done.
     pendingRestoreRef.current = getChapterScroll(chapterUrl);
+    if (pendingRestoreRef.current > 0) {
+      setRestoringPosition(true);
+    }
 
     async function loadInitial() {
       if (cached) {
@@ -644,6 +649,14 @@ function ReadContent() {
       <div style={{ position: "fixed", top: 0, left: 0, right: 0, height: 2, background: "var(--border)", zIndex: 20 }}>
         <div style={{ height: "100%", background: "var(--accent)", width: `${progress}%`, transition: "width .2s" }} />
       </div>
+
+      {restoringPosition && !loading && !error && pendingRestoreRef.current > 0 && (
+        <div style={{ position: "fixed", top: 80, left: "50%", transform: "translateX(-50%)", zIndex: 9999, background: "var(--accent)", color: "var(--bg)", padding: "10px 20px", borderRadius: 30, fontSize: 14, fontWeight: "bold", boxShadow: "0 4px 12px rgba(0,0,0,0.3)", display: "flex", alignItems: "center", gap: 8 }}>
+          <div className="spinner" style={{ width: 14, height: 14, border: "2px solid var(--bg)", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+          正在載入完整章節以恢復進度 ({pendingRestoreRef.current}%)...
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 50, background: "linear-gradient(to bottom, var(--bg) 80%, transparent)", padding: "12px 20px 32px", opacity: showUI ? 1 : 0, transform: showUI ? "translateY(0)" : "translateY(-100%)", transition: "all 0.3s ease", pointerEvents: showUI ? "all" : "none" }}>
