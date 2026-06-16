@@ -49,6 +49,7 @@ export default function BookshelfPage() {
         });
       }
     });
+    });
   }, []);
 
   const handleRemove = (e: React.MouseEvent, url: string) => {
