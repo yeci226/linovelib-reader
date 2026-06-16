@@ -40,7 +40,7 @@ export default function Home() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
   
-  const [hoveredCard, setHoveredCard] = useState(-1);
+
 
   // History State
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -210,8 +210,6 @@ export default function Home() {
       <div 
         key={item.url} 
         className="book-card"
-        onMouseEnter={() => setHoveredCard(index)}
-        onMouseLeave={() => setHoveredCard(-1)}
         style={
           isHero ? { gridColumn: "1 / 2", gridRow: "1 / 3", padding: 24, gap: 24 } : 
           isTop23 ? { gridColumn: "2 / 3", padding: 16 } : 
@@ -252,16 +250,8 @@ export default function Home() {
           <div style={{ fontSize: isHero ? 14 : 12, color: "var(--accent)", marginBottom: isHero ? 16 : 8 }}>
             <span className="clickable-text" onClick={() => handleQuickSearch(item.author)}>{item.author}</span>
           </div>
-          <div className="book-desc" onClick={() => handleNav(item.url)} style={{ cursor: "pointer", fontSize: isHero ? 15 : 13, lineHeight: 1.6, whiteSpace: (isHero || isTop23) ? "normal" : "nowrap", display: "block", overflow: (isHero || isTop23) ? "visible" : "hidden", textOverflow: (isHero || isTop23) ? "unset" : "clip" }}>
-            {hoveredCard === index && !(isHero || isTop23) ? (
-              <div className="marquee-wrap">
-                <div className="marquee-inner">
-                  {item.desc}
-                </div>
-              </div>
-            ) : (
-              item.desc
-            )}
+          <div className="book-desc" title={item.desc} onClick={() => handleNav(item.url)} style={{ cursor: "pointer", fontSize: isHero ? 15 : 13, lineHeight: 1.6, whiteSpace: (isHero || isTop23) ? "normal" : "nowrap", display: "block", overflow: "hidden", textOverflow: (isHero || isTop23) ? "unset" : "ellipsis" }}>
+            {item.desc}
           </div>
           {loadedTab !== "top" && item.tags && item.tags.length > 0 && (() => {
             const isStatus = (t: string) => /連載|完結|萬字|萬/.test(t) || (!isNaN(parseFloat(t)) && parseFloat(t) > 0);
@@ -317,8 +307,6 @@ export default function Home() {
       <div 
         key={`history-${entry.catalogUrl}`} 
         className="book-card history-card-style" 
-        onMouseEnter={() => setHoveredCard(index + 1000)}
-        onMouseLeave={() => setHoveredCard(-1)}
         onClick={() => resumeReading(entry)}
         style={{
           border: "2px solid var(--accent)",
@@ -375,16 +363,8 @@ export default function Home() {
             </div>
           )}
           {desc && (
-            <div className="book-desc" style={{ cursor: "pointer", fontSize: 13, lineHeight: 1.6, whiteSpace: "nowrap", display: "block", overflow: "hidden", textOverflow: "clip" }}>
-              {hoveredCard === index + 1000 ? (
-                <div className="marquee-wrap">
-                  <div className="marquee-inner">
-                    {desc}
-                  </div>
-                </div>
-              ) : (
-                desc
-              )}
+            <div className="book-desc" title={desc} style={{ cursor: "pointer", fontSize: 13, lineHeight: 1.6, whiteSpace: "nowrap", display: "block", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {desc}
             </div>
           )}
           {tags && tags.length > 0 && (() => {
@@ -474,12 +454,7 @@ export default function Home() {
         .clickable-text { cursor: pointer; transition: color .2s; }
         .clickable-text:hover { color: var(--accent); text-decoration: underline; }
         
-        .marquee-wrap { width: 100%; overflow: hidden; white-space: nowrap; }
-        .marquee-inner { display: inline-block; padding-right: 100%; animation: marquee-scroll 12s linear infinite; }
-        @keyframes marquee-scroll {
-          0% { transform: translateX(0); }
-          100% { transform: translateX(-100%); }
-        }
+
 
         @media (max-width: 768px) {
           .book-card[style*="grid-column: 1 / 2"] { grid-column: 1 / -1 !important; grid-row: auto !important; }

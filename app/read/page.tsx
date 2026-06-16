@@ -45,7 +45,11 @@ async function fetchChapterPage(url: string, catalogUrl: string): Promise<Chapte
     const text = await res.text().catch(() => "");
     throw new Error(`HTTP ${res.status}: ${text}`);
   }
-  return res.json();
+  const data = await res.json();
+  if (!data.content && data.html) {
+    Object.assign(data, parseChapterHtml(data.html, url, null));
+  }
+  return data;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,11 +66,7 @@ async function prefetchNextChapter(url: string, catalogUrl: string): Promise<voi
   try {
     const result = await fetchChapterPage(url, catalogUrl);
     
-    // Fallback for older backends that return 'html' instead of 'content'
-    if (!result.content && (result as any).html) {
-      const parsed = parseChapterHtml((result as any).html, url, null);
-      Object.assign(result, parsed);
-    }
+
     
     // Apply traditional chinese conversion
     result.content = restoreChars(result.content || "");
@@ -448,10 +448,7 @@ function ReadContent() {
       const data = prefetched ?? await fetchChapterPage(chapterUrl, catalogUrl);
       if (cancelled) return;
 
-      if (!data.content && (data as any).html) {
-        const parsed = parseChapterHtml((data as any).html, chapterUrl, null);
-        Object.assign(data, parsed);
-      }
+
 
       data.content = restoreChars(data.content || "");
       const firstNodes = contentToNodes(data.content);
@@ -513,10 +510,7 @@ function ReadContent() {
           const pageData = await fetchChapterPage(nextPage, catalogUrl);
           if (cancelled || loadingChapterRef.current !== chapterUrl) return;
           
-          if (!pageData.content && (pageData as any).html) {
-            const parsedPage = parseChapterHtml((pageData as any).html, nextPage, null);
-            Object.assign(pageData, parsedPage);
-          }
+
           
           pageData.content = restoreChars(pageData.content || "");
           const moreNodes = contentToNodes(pageData.content);
@@ -729,7 +723,7 @@ function ReadContent() {
               style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0, opacity: prevUrl ? 1 : 0.3, textAlign: "left", cursor: prevUrl ? "pointer" : "default" }}
             >
               <span style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>← 上一章</span>
-              {prevTitle ? <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{prevTitle}</span> : <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>上一章</span>}
+              <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{prevTitle || "上一章"}</span>
             </button>
             <button onClick={goBack} style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "8px 16px", whiteSpace: "nowrap", alignSelf: "center", cursor: "pointer", fontWeight: "bold", boxShadow: "0 2px 4px rgba(0,0,0,0.1)", flexShrink: 0 }}>
               回到目錄
@@ -740,7 +734,7 @@ function ReadContent() {
               style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0, opacity: nextUrl ? 1 : 0.3, alignItems: "flex-end", cursor: nextUrl ? "pointer" : "default", textAlign: "right" }}
             >
               <span style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>下一章 →</span>
-              {nextTitle ? <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{nextTitle}</span> : <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>下一章</span>}
+              <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{nextTitle || "下一章"}</span>
             </button>
           </div>
         )}
