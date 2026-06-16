@@ -157,7 +157,7 @@ function ReadContent() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [pageCount, setPageCount] = useState(0);
   const loadingChapterRef = useRef<string | null>(null); // tracks which chapterUrl is currently loading
-  const [restoringPosition, setRestoringPosition] = useState(false);
+  const [jumpPromptPct, setJumpPromptPct] = useState<number | null>(null);
 
   // Theme
   const [theme, setTheme] = useState<Theme>(() => {
@@ -187,7 +187,6 @@ function ReadContent() {
 
   const contentRef = useRef<HTMLDivElement>(null);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
-  const pendingRestoreRef = useRef<number>(0);
 
   // Auto Scroll
   const [autoScroll, setAutoScroll] = useState(false);
@@ -264,7 +263,9 @@ function ReadContent() {
       const total = el.offsetHeight - window.innerHeight;
       if (total <= 0) { setProgress(100); return; }
       const scrolled = -rect.top;
-      setProgress(Math.min(100, Math.max(0, Math.round((scrolled / total) * 100))));
+      const pct = Math.min(100, Math.max(0, Math.round((scrolled / total) * 100)));
+      setProgress(pct);
+      if (pct > 5) setJumpPromptPct(null);
     };
     window.addEventListener("scroll", handleScroll, { passive: true });
     return () => window.removeEventListener("scroll", handleScroll);
@@ -272,7 +273,7 @@ function ReadContent() {
 
   // Auto-save scroll progress & auto bookmark
   useEffect(() => {
-    if (!catalogUrl || loading || loadingMore || !title || progress === 0) return;
+    if (!catalogUrl || loading || loadingMore || !title || progress <= 5) return;
     const timeout = setTimeout(() => {
       saveScrollProgress(catalogUrl, progress);
       if (chapterUrl) {
@@ -348,24 +349,7 @@ function ReadContent() {
     };
   }, [autoScroll, scrollSpeed]);
 
-  // Restore saved scroll position once the full chapter is loaded (handles multi-page chapters)
-  useEffect(() => {
-    if (loading || loadingMore) return;
-    const pct = pendingRestoreRef.current;
-    if (pct > 0) {
-      setTimeout(() => {
-        pendingRestoreRef.current = 0;
-        window.scrollTo({
-          top: (pct / 100) * (document.body.scrollHeight - window.innerHeight),
-          behavior: "instant",
-        });
-        setRestoringPosition(false);
-      }, 100);
-    } else {
-      window.scrollTo({ top: 0, behavior: "instant" });
-      setRestoringPosition(false);
-    }
-  }, [loading, loadingMore, restoringPosition]);
+  // Scroll restoration has been removed in favor of jump prompt
 
   // Keyboard navigation
   useEffect(() => {
@@ -407,10 +391,17 @@ function ReadContent() {
     setPrevTitle("");
     setPageCount(cached ? 1 : 0);
     window.scrollTo(0, 0);
-    // Store the saved scroll position; the restoration effect fires once loading is done.
-    pendingRestoreRef.current = getChapterScroll(chapterUrl);
-    if (pendingRestoreRef.current > 0) {
-      setRestoringPosition(true);
+    // Determine if we should show jump prompt
+    let scrollPos = getChapterScroll(chapterUrl);
+    if (scrollPos === 0) {
+      const bms = getBookmarksForChapter(chapterUrl);
+      const autoBm = bms.find(b => b.isAuto);
+      if (autoBm) scrollPos = autoBm.scrollPct;
+    }
+    if (scrollPos > 5) {
+      setJumpPromptPct(scrollPos);
+    } else {
+      setJumpPromptPct(null);
     }
 
     async function loadInitial() {
@@ -423,8 +414,9 @@ function ReadContent() {
         setLoading(false);
         setNextUrl(cached.nextChapterUrl);
         setNextTitle(cached.nextChapterUrl ? resolveChapterTitle(catalogUrl, cached.nextChapterUrl) : "");
-        setPrevUrl(cached.prevChapterUrl || null);
-        setPrevTitle(cached.prevChapterUrl ? resolveChapterTitle(catalogUrl, cached.prevChapterUrl) : "");
+        const actualPrev = cached.prevChapterUrl && !cached.prevChapterUrl.includes('catalog') ? cached.prevChapterUrl : null;
+        setPrevUrl(actualPrev);
+        setPrevTitle(actualPrev ? resolveChapterTitle(catalogUrl, actualPrev) : "");
         setPageCount(1);
         if (cached.nextChapterUrl) {
           prefetchNextChapter(cached.nextChapterUrl, catalogUrl);
@@ -470,8 +462,9 @@ function ReadContent() {
       setNodes(firstNodes);
       setLoading(false);
       setPageCount(1);
-      setPrevUrl(data.prevChapterUrl);
-      setPrevTitle(data.prevChapterUrl ? resolveChapterTitle(catalogUrl, data.prevChapterUrl) : "");
+      const actualPrev = data.prevChapterUrl && !data.prevChapterUrl.includes('catalog') ? data.prevChapterUrl : null;
+      setPrevUrl(actualPrev);
+      setPrevTitle(actualPrev ? resolveChapterTitle(catalogUrl, actualPrev) : "");
 
       if (catalogUrl && chTitle) {
         const existing = getEntryFor(catalogUrl);
@@ -639,30 +632,16 @@ function ReadContent() {
       style={{ minHeight: "100vh", position: "relative" }}
       ref={contentRef}
       onClick={handleMainClick}
-      onTouchStart={e => {
-        touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      }}
-      onTouchEnd={e => {
-        if (!touchStart.current) return;
-        const dx = e.changedTouches[0].clientX - touchStart.current.x;
-        const dy = e.changedTouches[0].clientY - touchStart.current.y;
-        touchStart.current = null;
-        if (Math.abs(dx) > 120 && Math.abs(dy) < Math.abs(dx)) {
-          if (dx < 0 && nextUrl && !loading) goChapter(nextUrl);
-          if (dx > 0 && prevUrl && !loading) goChapter(prevUrl);
-        }
-      }}
     >
       {/* Progress bar */}
       <div style={{ position: "fixed", top: 0, left: 0, right: 0, height: 2, background: "var(--border)", zIndex: 20 }}>
         <div style={{ height: "100%", background: "var(--accent)", width: `${progress}%`, transition: "width .2s" }} />
       </div>
 
-      {restoringPosition && !loading && !error && pendingRestoreRef.current > 0 && (
-        <div style={{ position: "fixed", top: 80, left: "50%", transform: "translateX(-50%)", zIndex: 9999, background: "var(--accent)", color: "var(--bg)", padding: "10px 20px", borderRadius: 30, fontSize: 14, fontWeight: "bold", boxShadow: "0 4px 12px rgba(0,0,0,0.3)", display: "flex", alignItems: "center", gap: 8 }}>
-          <div className="spinner" style={{ width: 14, height: 14, border: "2px solid var(--bg)", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
-          正在載入完整章節以恢復進度 ({pendingRestoreRef.current}%)...
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      {jumpPromptPct !== null && !loading && !error && (
+        <div style={{ position: "fixed", bottom: 120, left: "50%", transform: "translateX(-50%)", zIndex: 40, background: "var(--surface)", border: "1px solid var(--border)", padding: "12px 20px", borderRadius: 30, boxShadow: "0 4px 16px rgba(0,0,0,0.2)", display: "flex", gap: 12, alignItems: "center" }}>
+          <span style={{ fontSize: 13, color: "var(--text)", whiteSpace: "nowrap" }}>上次閱讀到 {jumpPromptPct}%</span>
+          <button onClick={() => { scrollToBookmark(jumpPromptPct); setJumpPromptPct(null); }} style={{ background: "var(--accent)", color: "var(--bg)", border: "none", borderRadius: 16, padding: "6px 16px", fontSize: 13, fontWeight: "bold", cursor: "pointer", whiteSpace: "nowrap" }}>跳轉過去</button>
         </div>
       )}
 
@@ -747,21 +726,21 @@ function ReadContent() {
             <button
               onClick={() => prevUrl && goChapter(prevUrl)}
               disabled={!prevUrl}
-              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, maxWidth: 200, opacity: prevUrl ? 1 : 0.3, textAlign: "left", cursor: prevUrl ? "pointer" : "default" }}
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0, opacity: prevUrl ? 1 : 0.3, textAlign: "left", cursor: prevUrl ? "pointer" : "default" }}
             >
-              <span style={{ fontSize: 11, color: "var(--text-dim)" }}>← 上一章</span>
-              {prevTitle && <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{prevTitle}</span>}
+              <span style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>← 上一章</span>
+              {prevTitle ? <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{prevTitle}</span> : <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>上一章</span>}
             </button>
-            <button onClick={goBack} style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "8px 16px", whiteSpace: "nowrap", alignSelf: "center", cursor: "pointer", fontWeight: "bold", boxShadow: "0 2px 4px rgba(0,0,0,0.1)" }}>
+            <button onClick={goBack} style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "8px 16px", whiteSpace: "nowrap", alignSelf: "center", cursor: "pointer", fontWeight: "bold", boxShadow: "0 2px 4px rgba(0,0,0,0.1)", flexShrink: 0 }}>
               回到目錄
             </button>
             <button
               onClick={() => nextUrl && goChapter(nextUrl)}
               disabled={!nextUrl}
-              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, maxWidth: 200, opacity: nextUrl ? 1 : 0.3, alignItems: "flex-end", cursor: nextUrl ? "pointer" : "default", textAlign: "right" }}
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0, opacity: nextUrl ? 1 : 0.3, alignItems: "flex-end", cursor: nextUrl ? "pointer" : "default", textAlign: "right" }}
             >
-              <span style={{ fontSize: 11, color: "var(--text-dim)" }}>下一章 →</span>
-              {nextTitle && <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{nextTitle}</span>}
+              <span style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>下一章 →</span>
+              {nextTitle ? <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{nextTitle}</span> : <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>下一章</span>}
             </button>
           </div>
         )}

@@ -53,18 +53,53 @@ export function triggerSyncPush() {
   }, 3000); // Debounce
 }
 
+let lastPullTime = 0;
+
 export async function triggerSyncPull() {
   const token = getAuthToken();
   if (!token) return;
+
+  const now = Date.now();
+  if (now - lastPullTime < 10000) return; // 10s cooldown
+  lastPullTime = now;
 
   try {
     const res = await fetch("/api/sync/pull", {
       headers: { "Authorization": `Bearer ${token}` }
     });
+
     if (!res.ok) throw new Error("Pull failed");
     const data = await res.json();
     
-    if (data.history) save(data.history, true);
+    if (data.history) {
+      const localHistory = getHistory();
+      const mergedMap = new Map();
+      
+      // Add local history first
+      for (const entry of localHistory) mergedMap.set(entry.catalogUrl, entry);
+      
+      let needsPush = false;
+      // Merge server history
+      for (const serverEntry of data.history) {
+        const localEntry = mergedMap.get(serverEntry.catalogUrl);
+        if (!localEntry || serverEntry.updatedAt > localEntry.updatedAt) {
+          mergedMap.set(serverEntry.catalogUrl, serverEntry);
+        } else if (localEntry && serverEntry.updatedAt === localEntry.updatedAt) {
+          localEntry.visitedChapters = { ...serverEntry.visitedChapters, ...localEntry.visitedChapters };
+        } else {
+          // Local is newer than server, we should push to sync
+          needsPush = true;
+        }
+      }
+      
+      const mergedHistory = Array.from(mergedMap.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+      save(mergedHistory, true);
+      
+      if (needsPush) {
+        triggerSyncPush();
+      }
+    }
+    
     if (data.bookmarks) saveBookmarks(data.bookmarks, true);
     if (data.bookshelf) saveBookshelf(data.bookshelf, true);
     if (data.settings && Object.keys(data.settings).length > 0) saveSettings(data.settings, true);

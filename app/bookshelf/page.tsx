@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { loadBookshelf, BookshelfEntry, removeFromBookshelf } from "@/lib/history";
 import { ImagePlaceholderIcon, CloseIcon } from "@/components/icons";
+import { triggerSyncPull } from "@/lib/sync";
 
 interface BookshelfItem extends BookshelfEntry {
   hasUpdate?: boolean;
@@ -15,11 +16,12 @@ export default function BookshelfPage() {
   const router = useRouter();
 
   useEffect(() => {
-    const loaded = loadBookshelf();
-    setItems(loaded.map(i => ({ ...i, checking: true })));
+    triggerSyncPull().then(() => {
+      const loaded = loadBookshelf();
+      setItems(loaded.map(i => ({ ...i, checking: true })));
 
-    // Check for updates
-    loaded.forEach(async (item, idx) => {
+      // Check for updates
+      loaded.forEach(async (item, idx) => {
       try {
         const res = await fetch(`/api/catalog?url=${encodeURIComponent(item.catalogUrl)}&refresh=0`);
         if (res.ok) {

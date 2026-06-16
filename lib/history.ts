@@ -173,9 +173,14 @@ export function resolveChapterTitle(catalogUrl: string, chapterUrl: string): str
   if (catalogUrl) {
     const catalog = getCatalogCache(catalogUrl);
     if (catalog) {
+      const getPath = (u: string) => {
+        try { return new URL(u, "http://localhost").pathname; }
+        catch { return u; }
+      };
+      const targetPath = getPath(chapterUrl);
       for (const group of catalog.groups) {
         for (const ch of group.chapters) {
-          if (ch.url === chapterUrl) return ch.title;
+          if (ch.url && getPath(ch.url) === targetPath) return ch.title;
         }
       }
     }

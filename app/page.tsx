@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { SettingsIcon, ImagePlaceholderIcon, UsersIcon, BookIcon, StarIcon } from "@/components/icons";
 import { getHistory, getCatalogCache, type HistoryEntry } from "@/lib/history";
 import { CommunityHall } from "@/components/CommunityHall";
-import { getAuthToken, getUsernameFromToken } from "@/lib/sync";
+import { getAuthToken, getUsernameFromToken, triggerSyncPull } from "@/lib/sync";
 
 type DiscoverItem = {
   title: string;
@@ -56,6 +56,10 @@ export default function Home() {
       setUsername(getUsernameFromToken(token));
       const cachedAvatar = localStorage.getItem('linovelib-avatar');
       if (cachedAvatar) setAvatarUrl(cachedAvatar);
+      
+      triggerSyncPull().then(() => {
+        setHistory(getHistory().slice(0, 3));
+      });
       
       fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } })
         .then(res => res.json())
