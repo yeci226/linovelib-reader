@@ -61,6 +61,13 @@ export function getHistory(): HistoryEntry[] {
   return load();
 }
 
+export function removeHistory(catalogUrl: string): void {
+  if (typeof window === "undefined") return;
+  const all = load();
+  const filtered = all.filter(e => e.catalogUrl !== catalogUrl);
+  save(filtered, false); // This also triggers cloud sync
+}
+
 /** Upsert an entry (novel-level metadata). Moves it to front. */
 export function saveProgress(entry: HistoryEntry): void {
   const existing = load().filter(e => e.catalogUrl !== entry.catalogUrl);
@@ -209,6 +216,7 @@ export type Bookmark = {
   chapterUrl: string;
   chapterTitle: string;
   scrollPct: number;    // 0-100, percentage through the chapter
+  nodeIndex?: number;   // paragraph/node index to anchor position reliably across layouts
   createdAt: number;
   isAuto?: boolean;     // indicates this is a system auto-saved bookmark
 };

@@ -192,18 +192,18 @@ export function CommentBoard({ apiEndpoint, postEndpoint, payloadKey, payloadVal
                         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
                           <button 
                             onClick={() => handleVote(c.id, 1)}
-                            style={{ background: "none", border: "none", cursor: token ? "pointer" : "default", color: c.user_vote === 1 ? "var(--accent)" : "var(--text-muted)", fontSize: 13, fontWeight: "bold", padding: 0, display: "flex", alignItems: "center", gap: 4 }}
+                            style={{ background: "none", border: "none", cursor: token ? "pointer" : "default", color: c.user_vote === 1 ? "var(--accent)" : "var(--text-muted)", fontSize: 13, fontWeight: "bold", padding: 0, display: "flex", alignItems: "center", gap: 4, lineHeight: 1 }}
                           >
                             <ArrowUpIcon style={{ fontSize: 16 }} /> 推
                           </button>
                           <button 
                             onClick={() => handleVote(c.id, -1)}
-                            style={{ background: "none", border: "none", cursor: token ? "pointer" : "default", color: c.user_vote === -1 ? "#e06c6c" : "var(--text-muted)", fontSize: 13, fontWeight: "bold", padding: 0, display: "flex", alignItems: "center", gap: 4 }}
+                            style={{ background: "none", border: "none", cursor: token ? "pointer" : "default", color: c.user_vote === -1 ? "#e06c6c" : "var(--text-muted)", fontSize: 13, fontWeight: "bold", padding: 0, display: "flex", alignItems: "center", gap: 4, lineHeight: 1 }}
                           >
                             <ArrowDownIcon style={{ fontSize: 16 }} /> 噓
                           </button>
                         </div>
-                        <span style={{ fontSize: 13, fontWeight: "bold", color: c.score > 0 ? "var(--accent)" : c.score < 0 ? "#e06c6c" : "var(--text)" }}>
+                        <span style={{ fontSize: 13, fontWeight: "bold", color: c.score > 0 ? "var(--accent)" : c.score < 0 ? "#e06c6c" : "var(--text)", display: "flex", alignItems: "center", lineHeight: 1 }}>
                           {c.score > 0 ? `+${c.score}` : c.score === 0 ? "0" : c.score}
                         </span>
                       </div>

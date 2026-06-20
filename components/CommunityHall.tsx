@@ -208,13 +208,13 @@ export function CommunityHall() {
                       onClick={() => item.lastChapterUrl && router.push(`/read?url=${encodeURIComponent(item.lastChapterUrl)}&catalog=${encodeURIComponent(item.catalogUrl)}`)}
                       style={{ 
                         marginTop: 4, padding: "6px 10px", background: "var(--surface2)", borderRadius: 6, 
-                        border: "1px solid var(--border)", fontSize: 12, color: "var(--text)", 
+                        border: "1px solid var(--border)", color: "var(--text)", 
                         cursor: item.lastChapterUrl ? "pointer" : "default",
-                        display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"
+                        display: "flex", flexDirection: "column", gap: 2, overflow: "hidden"
                       }}
                     >
-                      {item.volTitle && <span style={{ color: "var(--accent)", fontWeight: "bold", flexShrink: 0 }}>{item.volTitle}</span>}
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", opacity: 0.9 }}>
+                      {item.volTitle && <span style={{ color: "var(--accent)", fontWeight: "bold", fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.volTitle}</span>}
+                      <span style={{ fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", opacity: 0.9 }}>
                         {item.lastChapterTitle}
                       </span>
                     </div>

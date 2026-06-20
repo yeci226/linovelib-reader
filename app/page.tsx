@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { SettingsIcon, ImagePlaceholderIcon, UsersIcon, BookIcon, StarIcon } from "@/components/icons";
-import { getHistory, getCatalogCache, type HistoryEntry } from "@/lib/history";
+import { getHistory, getCatalogCache, removeHistory, type HistoryEntry } from "@/lib/history";
 import { CommunityHall } from "@/components/CommunityHall";
 import { getAuthToken, getUsernameFromToken, triggerSyncPull } from "@/lib/sync";
 
@@ -146,6 +146,14 @@ export default function Home() {
     }
   };
 
+  const handleDeleteHistory = (e: React.MouseEvent, catalogUrl: string) => {
+    e.stopPropagation();
+    if (confirm("確定要從近期閱讀中刪除此紀錄嗎？")) {
+      removeHistory(catalogUrl);
+      setHistory(getHistory().slice(0, 3));
+    }
+  };
+
   const fetchData = async (currentTab: string, p: number, query: string = "", type: "normal" | "tag" = "normal") => {
     setIsFetching(true);
     if (items.length === 0 || p === 1) setLoading(true);
@@ -218,8 +226,8 @@ export default function Home() {
       >
         {rank !== null && (
           <div className="top-badge" style={{
-            background: rank === 1 ? "#FFD700" : rank === 2 ? "#C0C0C0" : rank === 3 ? "#CD7F32" : "var(--accent)",
-            color: rank <= 3 ? "#000" : "var(--bg)",
+            background: (!isMobile && rank === 1) ? "#FFD700" : (!isMobile && rank === 2) ? "#C0C0C0" : (!isMobile && rank === 3) ? "#CD7F32" : "var(--accent)",
+            color: (!isMobile && rank <= 3) ? "#000" : "var(--bg)",
             transform: isHero ? "scale(1.2) translate(-4px, -4px)" : "none"
           }}>
             {rank}
@@ -286,21 +294,33 @@ export default function Home() {
     let author = entry.author || "";
     let desc = entry.desc || "";
     let tags = entry.tags || [];
+    let coverUrl = entry.coverUrl;
     
-    if (!author && !desc) {
+    const enriched = items.find(n => n.url === entry.catalogUrl);
+    if (enriched) {
+      if (enriched.author) author = enriched.author;
+      if (enriched.desc) desc = enriched.desc;
+      if (enriched.tags && enriched.tags.length > 0) tags = enriched.tags;
+      if (enriched.coverUrl) coverUrl = enriched.coverUrl;
+    } else {
       const cached = getCatalogCache(entry.catalogUrl);
       if (cached) {
-        author = cached.author || "";
-        desc = cached.desc || "";
-        tags = cached.tags || [];
+        if (!author && cached.author) author = cached.author;
+        if (!desc && cached.desc) desc = cached.desc;
+        if ((!tags || tags.length === 0) && cached.tags) tags = cached.tags;
+        if (cached.coverUrl && !enriched) coverUrl = cached.coverUrl;
       }
     }
 
-    if (!author && !desc) {
-      const enriched = items.find(n => n.url === entry.catalogUrl);
-      author = enriched?.author || "";
-      desc = enriched?.desc || "";
-      tags = enriched?.tags || [];
+    let volTitle = "";
+    const cachedForVol = getCatalogCache(entry.catalogUrl);
+    if (cachedForVol && cachedForVol.groups) {
+      for (const group of cachedForVol.groups) {
+        if (group.chapters && group.chapters.some(c => c.url === entry.lastChapterUrl)) {
+          volTitle = group.volTitle || "";
+          break;
+        }
+      }
     }
 
     return (
@@ -314,17 +334,25 @@ export default function Home() {
           cursor: "pointer"
         }}
       >
+        <button 
+          className="history-delete-btn"
+          onClick={(e) => handleDeleteHistory(e, entry.catalogUrl)}
+          title="刪除閱讀紀錄"
+        >
+          ✕
+        </button>
         {entry.lastChapterUrl ? (
           <div style={{
             position: "absolute", top: -10, left: -10,
             background: "var(--accent)", color: "#000",
-            fontWeight: 900, fontSize: 13,
-            padding: "4px 12px", borderRadius: "14px",
+            padding: "8px 12px", borderRadius: "14px",
             boxShadow: "0 2px 8px rgba(0,0,0,.3)", zIndex: 2,
             border: "2px solid var(--surface)", pointerEvents: "none",
-            maxWidth: "calc(100% - 20px)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
+            maxWidth: "calc(100% - 20px)", display: "flex", flexDirection: "column", gap: 2
           }}>
-            繼續閱讀 {entry.lastChapterTitle || ""}
+            <div style={{ fontWeight: 900, fontSize: 11, opacity: 0.8 }}>繼續閱讀</div>
+            {volTitle && <div style={{ fontWeight: 800, fontSize: 10, opacity: 0.9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{volTitle}</div>}
+            <div style={{ fontWeight: 900, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.lastChapterTitle || ""}</div>
           </div>
         ) : (
           <div style={{
@@ -345,8 +373,8 @@ export default function Home() {
             borderRadius: 8, flexShrink: 0, overflow: "hidden", background: "var(--surface2)", cursor: "pointer",
           }}
         >
-          {entry.coverUrl ? (
-            <img src={`/api/image?url=${encodeURIComponent(entry.coverUrl)}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          {coverUrl ? (
+            <img src={`/api/image?url=${encodeURIComponent(coverUrl)}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           ) : (
             <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)" }}><ImagePlaceholderIcon style={{ fontSize: 24 }} /></div>
           )}
@@ -430,7 +458,7 @@ export default function Home() {
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 20, maxWidth: 1200, margin: "0 auto", width: "100%" }}>
                 {showHistory && history.map((entry, i) => renderHistoryCard(entry, i))}
-                {items.map((item, i) => {
+                {items.filter(item => !(showHistory && history.some(h => h.catalogUrl === item.url))).map((item, i) => {
                   const rank = loadedTab === "top" ? (page - 1) * 50 + i + 1 : null;
                   return renderBookCard(item, i, rank);
                 })}
@@ -446,6 +474,9 @@ export default function Home() {
     <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)" }}>
       <style>{`
         .book-card { display: flex; gap: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; position: relative; }
+        .history-card-style:hover .history-delete-btn { opacity: 1; pointer-events: auto; }
+        .history-delete-btn { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border-radius: 50%; background: rgba(0,0,0,0.6); color: #fff; border: 1px solid rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center; font-size: 14px; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 10; }
+        .history-delete-btn:hover { background: #e06c6c; border-color: #e06c6c; }
         .history-card { cursor: pointer; border-color: var(--accent); border-width: 2px; }
         .history-card:hover { background: var(--surface2); }
         .history-badge { position: absolute; top: -10px; left: -10px; background: var(--accent); color: var(--bg); font-weight: 800; font-size: 13px; padding: 4px 10px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.3); z-index: 2; border: 2px solid var(--surface); pointer-events: none; }

@@ -8,8 +8,13 @@ export function getAuthToken(): string | null {
 export function getUsernameFromToken(t: string | null): string {
   if (!t) return "User";
   try {
-    return JSON.parse(atob(t.split('.')[1])).username || "User";
-  } catch {
+    const base64Url = t.split('.')[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+    }).join(''));
+    return JSON.parse(jsonPayload).username || "User";
+  } catch (e) {
     return "User";
   }
 }
@@ -33,7 +38,6 @@ export function triggerSyncPush() {
       const history = getHistory();
       const bookmarks = getAllBookmarks();
       const bookshelf = loadBookshelf();
-      const settings = loadSettings();
 
       const res = await fetch("/api/sync/push", {
         method: "POST",
@@ -41,7 +45,7 @@ export function triggerSyncPush() {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`
         },
-        body: JSON.stringify({ history, bookmarks, bookshelf, settings })
+        body: JSON.stringify({ history, bookmarks, bookshelf })
       });
       const data = await res.json();
       if (data.mergedHistory) {
@@ -102,7 +106,6 @@ export async function triggerSyncPull() {
     
     if (data.bookmarks) saveBookmarks(data.bookmarks, true);
     if (data.bookshelf) saveBookshelf(data.bookshelf, true);
-    if (data.settings && Object.keys(data.settings).length > 0) saveSettings(data.settings, true);
     
   } catch (e) {
     // silently ignore pull errors in background

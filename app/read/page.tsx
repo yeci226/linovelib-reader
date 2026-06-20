@@ -278,12 +278,24 @@ function ReadContent() {
       saveScrollProgress(catalogUrl, progress);
       if (chapterUrl) {
         saveChapterScroll(chapterUrl, progress);
+        
+        let activeNodeIdx = 0;
+        const domNodes = document.querySelectorAll('.chapter-node');
+        for (let i = 0; i < domNodes.length; i++) {
+          const rect = domNodes[i].getBoundingClientRect();
+          if (rect.top >= -50 || rect.bottom > window.innerHeight / 4) {
+            activeNodeIdx = parseInt(domNodes[i].getAttribute('data-node-idx') || '0', 10);
+            break;
+          }
+        }
+
         addBookmark({
           catalogUrl,
           novelTitle: title,
           chapterUrl,
           chapterTitle: title,
           scrollPct: progress,
+          nodeIndex: activeNodeIdx,
           isAuto: true,
         });
         setBookmarks(getBookmarksForChapter(chapterUrl));
@@ -590,12 +602,23 @@ function ReadContent() {
   const currentLineHeight = LINE_HEIGHTS[lineHeightIdx];
 
   const handleAddBookmark = () => {
+    let activeNodeIdx = 0;
+    const domNodes = document.querySelectorAll('.chapter-node');
+    for (let i = 0; i < domNodes.length; i++) {
+      const rect = domNodes[i].getBoundingClientRect();
+      if (rect.top >= -50 || rect.bottom > window.innerHeight / 4) {
+        activeNodeIdx = parseInt(domNodes[i].getAttribute('data-node-idx') || '0', 10);
+        break;
+      }
+    }
+
     const bm = addBookmark({
       catalogUrl,
       novelTitle: title,
       chapterUrl,
       chapterTitle: title,
       scrollPct: progress,
+      nodeIndex: activeNodeIdx,
     });
     setBookmarks(prev => [bm, ...prev]);
   };
@@ -605,10 +628,18 @@ function ReadContent() {
     setBookmarks(prev => prev.filter(b => b.id !== id));
   };
 
-  const scrollToBookmark = (scrollPct: number) => {
+  const scrollToBookmark = (bm: Bookmark) => {
+    if (bm.nodeIndex !== undefined) {
+      const node = document.querySelector(`.chapter-node[data-node-idx="${bm.nodeIndex}"]`);
+      if (node) {
+        node.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+    }
+    // Fallback
     window.scrollTo({
-      top: (scrollPct / 100) * (document.body.scrollHeight - window.innerHeight),
-      behavior: "smooth",
+      top: (bm.scrollPct / 100) * (document.body.scrollHeight - window.innerHeight),
+      behavior: "smooth"
     });
   };
 
@@ -634,8 +665,8 @@ function ReadContent() {
 
       {jumpPromptPct !== null && !loading && !error && (
         <div style={{ position: "fixed", bottom: 120, left: "50%", transform: "translateX(-50%)", zIndex: 40, background: "var(--surface)", border: "1px solid var(--border)", padding: "12px 20px", borderRadius: 30, boxShadow: "0 4px 16px rgba(0,0,0,0.2)", display: "flex", gap: 12, alignItems: "center" }}>
-          <span style={{ fontSize: 13, color: "var(--text)", whiteSpace: "nowrap" }}>上次閱讀到 {jumpPromptPct}%</span>
-          <button onClick={() => { scrollToBookmark(jumpPromptPct); setJumpPromptPct(null); }} style={{ background: "var(--accent)", color: "var(--bg)", border: "none", borderRadius: 16, padding: "6px 16px", fontSize: 13, fontWeight: "bold", cursor: "pointer", whiteSpace: "nowrap" }}>跳轉過去</button>
+            <div style={{ fontSize: 13, color: "var(--text)" }}>跳轉至上次書籤位置 ({jumpPromptPct}%)？</div>
+            <button onClick={() => { scrollToBookmark({ scrollPct: jumpPromptPct } as Bookmark); setJumpPromptPct(null); }} style={{ background: "var(--accent)", color: "var(--bg)", border: "none", borderRadius: 16, padding: "6px 16px", fontSize: 13, fontWeight: "bold", cursor: "pointer", whiteSpace: "nowrap" }}>跳轉過去</button>
         </div>
       )}
 
@@ -688,13 +719,13 @@ function ReadContent() {
           <div style={{ fontSize: `${fontSize}px`, lineHeight: currentLineHeight, color: "var(--text)", fontFamily: FONT_MAP[fontFamily] }}>
             {nodes.map((node, i) =>
               node.type === "text" ? (
-                <p key={i} style={{ marginBottom: "1.5em", textIndent: "2em" }}>{node.text}</p>
+                <p key={i} className="chapter-node" data-node-idx={i} style={{ marginBottom: "1.5em", textIndent: "2em" }}>{node.text}</p>
               ) : node.type === "page-number" ? (
-                <div key={i} style={{ textAlign: "center", color: "var(--text-dim)", fontSize: "0.75em", margin: "2.5em 0", opacity: 0.6 }}>
+                <div key={i} className="chapter-node" data-node-idx={i} style={{ textAlign: "center", color: "var(--text-dim)", fontSize: "0.75em", margin: "2.5em 0", opacity: 0.6 }}>
                   {node.text}
                 </div>
               ) : (
-                <div key={i} style={{ textAlign: "center", margin: "2em 0" }}>
+                <div key={i} className="chapter-node" data-node-idx={i} style={{ textAlign: "center", margin: "2em 0" }}>
                   <img
                     src={`/api/image?url=${encodeURIComponent(node.src)}`}
                     alt={node.alt}
@@ -761,7 +792,7 @@ function ReadContent() {
               <div key={bm.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 20, padding: "4px 10px", fontSize: 12, color: "var(--text-muted)" }}>
                 {bm.isAuto && <span style={{ color: "var(--accent-dim)", fontSize: 10, fontWeight: "bold" }}>[自動]</span>}
                 <button
-                  onClick={() => scrollToBookmark(bm.scrollPct)}
+                  onClick={() => scrollToBookmark(bm)}
                   style={{ background: "none", border: "none", color: "var(--accent)", fontSize: 12, padding: 0 }}
                 >
                   {bm.scrollPct}%
