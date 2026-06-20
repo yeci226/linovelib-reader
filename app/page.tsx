@@ -214,6 +214,10 @@ export default function Home() {
   };
 
   const renderBookCard = (item: DiscoverItem, index: number, rank: number | null, isHero: boolean = false, isTop23: boolean = false) => {
+    const cached = getCatalogCache(item.url) || {};
+    const coverUrl = cached.coverUrl || item.coverUrl;
+    const tags = item.tags?.length ? item.tags : cached.tags || [];
+
     return (
       <div 
         key={item.url} 
@@ -242,8 +246,8 @@ export default function Home() {
             boxShadow: isHero ? "0 4px 16px rgba(0,0,0,0.2)" : "none"
           }}
         >
-          {item.coverUrl ? (
-            <img src={`/api/image?url=${encodeURIComponent(item.coverUrl)}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          {coverUrl ? (
+            <img src={`/api/image?url=${encodeURIComponent(coverUrl)}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           ) : (
             <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)" }}><ImagePlaceholderIcon style={{ fontSize: 24 }} /></div>
           )}
@@ -261,10 +265,10 @@ export default function Home() {
           <div className="book-desc" title={item.desc} onClick={() => handleNav(item.url)} style={{ cursor: "pointer", fontSize: isHero ? 15 : 13, lineHeight: 1.6, whiteSpace: (isHero || isTop23) ? "normal" : "nowrap", display: "block", overflow: "hidden", textOverflow: (isHero || isTop23) ? "unset" : "ellipsis" }}>
             {item.desc}
           </div>
-          {loadedTab !== "top" && item.tags && item.tags.length > 0 && (() => {
+          {tags && tags.length > 0 && (() => {
             const isStatus = (t: string) => /連載|完結|萬字|萬/.test(t) || (!isNaN(parseFloat(t)) && parseFloat(t) > 0);
-            const genreTags = item.tags.filter(t => !isStatus(t));
-            const statusTags = item.tags.filter(isStatus);
+            const genreTags = tags.filter(t => !isStatus(t));
+            const statusTags = tags.filter(isStatus);
             const statusString = statusTags.join("");
             
             return (
