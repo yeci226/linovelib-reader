@@ -214,9 +214,9 @@ export default function Home() {
   };
 
   const renderBookCard = (item: DiscoverItem, index: number, rank: number | null, isHero: boolean = false, isTop23: boolean = false) => {
-    const cached = getCatalogCache(item.url) || {};
-    const coverUrl = cached.coverUrl || item.coverUrl;
-    const tags = item.tags?.length ? item.tags : cached.tags || [];
+    const cached = getCatalogCache(item.url);
+    const coverUrl = cached?.coverUrl || item.coverUrl;
+    const tags = item.tags?.length ? item.tags : cached?.tags || [];
 
     return (
       <div 
