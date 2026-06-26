@@ -1,8 +1,9 @@
 "use client";
-import { useEffect, useState, Suspense, type ReactNode } from "react";
+import { useEffect, useMemo, useState, Suspense, type ReactNode } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { getEntryFor, saveProgress, getCatalogCache, saveCatalogCache, type HistoryEntry } from "@/lib/history";
+import { getEntryFor, saveProgress, getCatalogCache, saveCatalogCache, getChapterCache, removeChapterCache, removeChapterCaches, type HistoryEntry } from "@/lib/history";
+import { downloadChapterForOffline, downloadChaptersForOffline } from "@/lib/offline";
 import { ImagePlaceholderIcon, GalleryIcon } from "@/components/icons";
 import { CommentBoard } from "@/components/CommentBoard";
 
@@ -42,12 +43,90 @@ function CatalogContent() {
   const [sortDesc, setSortDesc] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const [searchQuery, setSearchQuery] = useState("");
+  const [downloadedMap, setDownloadedMap] = useState<Record<string, boolean>>({});
+  const [downloadingChapterUrl, setDownloadingChapterUrl] = useState("");
+  const [downloadingVolumeKey, setDownloadingVolumeKey] = useState("");
+  const [downloadMessage, setDownloadMessage] = useState("");
 
   const lastChapterUrl = entry?.lastChapterUrl ?? null;
   const lastChapterTitle = entry?.lastChapterTitle ?? "";
   const visitedChapters = entry?.visitedChapters ?? {};
 
   const allChapters: Chapter[] = groups.flatMap(g => g.chapters);
+  const downloadableChapterUrls = useMemo(
+    () => allChapters.map(ch => ch.url).filter((url): url is string => !!url && url !== "null"),
+    [allChapters],
+  );
+
+  function refreshDownloadedMap(nextGroups: VolumeGroup[] = groups) {
+    const next: Record<string, boolean> = {};
+    for (const group of nextGroups) {
+      for (const ch of group.chapters) {
+        if (ch.url && ch.url !== "null") next[ch.url] = !!getChapterCache(ch.url);
+      }
+    }
+    setDownloadedMap(next);
+  }
+
+  async function handleChapterDownload(ch: Chapter) {
+    if (!ch.url || ch.url === "null") {
+      setDownloadMessage(`〈${ch.title}〉目前沒有可用章節連結，無法預下載。`);
+      return;
+    }
+    setDownloadingChapterUrl(ch.url);
+    setDownloadMessage(`正在預下載：${ch.title}`);
+    try {
+      const result = await downloadChapterForOffline(ch.url, catalogUrl);
+      refreshDownloadedMap();
+      setDownloadMessage(result.alreadyDownloaded ? `已下載：${result.title}` : `下載完成：${result.title}`);
+    } catch (e) {
+      setDownloadMessage(`下載失敗：${String(e)}`);
+    } finally {
+      setDownloadingChapterUrl("");
+    }
+  }
+
+  async function handleVolumeDownload(group: VolumeGroup, volumeIndex: number) {
+    const urls = group.chapters.map(ch => ch.url).filter((url): url is string => !!url && url !== "null");
+    if (urls.length === 0) {
+      setDownloadMessage(`〈${group.volTitle || `第 ${volumeIndex + 1} 卷`}〉沒有可下載章節。`);
+      return;
+    }
+    const key = `${volumeIndex}:${group.volTitle}`;
+    setDownloadingVolumeKey(key);
+    setDownloadMessage(`正在預下載 ${group.volTitle || `第 ${volumeIndex + 1} 卷`}…`);
+    try {
+      const result = await downloadChaptersForOffline(urls, catalogUrl, progress => {
+        setDownloadMessage(`正在預下載 ${group.volTitle || `第 ${volumeIndex + 1} 卷`}：${progress.completed}/${progress.total} · ${progress.chapterTitle}`);
+      });
+      refreshDownloadedMap();
+      setDownloadMessage(`${group.volTitle || `第 ${volumeIndex + 1} 卷`} 下載完成：新增 ${result.completed} 章，略過 ${result.skipped} 章。`);
+    } catch (e) {
+      setDownloadMessage(`整卷下載失敗：${String(e)}`);
+    } finally {
+      setDownloadingVolumeKey("");
+    }
+  }
+
+  function handleDeleteChapterDownload(ch: Chapter) {
+    if (!ch.url || ch.url === "null") return;
+    removeChapterCache(ch.url);
+    refreshDownloadedMap();
+    setDownloadMessage(`已刪除離線章節：${ch.title}`);
+  }
+
+  function handleDeleteVolumeDownload(group: VolumeGroup) {
+    const urls = group.chapters.map(ch => ch.url).filter((url): url is string => !!url && url !== "null");
+    removeChapterCaches(urls);
+    refreshDownloadedMap();
+    setDownloadMessage(`已刪除 ${group.volTitle || "此卷"} 的離線內容。`);
+  }
+
+  function handleDeleteAllDownloads() {
+    removeChapterCaches(downloadableChapterUrls);
+    refreshDownloadedMap();
+    setDownloadMessage("已刪除本書所有已下載章節。");
+  }
 
   // Shared logic to apply a fetched catalog to state + persistence
   function applyParsed(
@@ -175,6 +254,10 @@ function CatalogContent() {
     }
   }, [lastChapterUrl, groups]);
 
+  useEffect(() => {
+    refreshDownloadedMap(groups);
+  }, [groups]);
+
   const toggleCollapse = (gi: number) =>
     setCollapsed(prev => ({ ...prev, [gi]: !prev[gi] }));
 
@@ -199,6 +282,7 @@ function CatalogContent() {
   const displayGroups = sortDesc ? [...groups].reverse() : groups;
 
   const validLastChapterUrl = lastChapterUrl && lastChapterUrl !== "null" ? lastChapterUrl : "";
+  const downloadedCount = downloadableChapterUrls.filter(url => downloadedMap[url]).length;
 
   // Search: flat list of {chapter, volTitle} matching query (chapter title OR volume title)
   const trimmedQuery = searchQuery.trim();
@@ -341,6 +425,26 @@ function CatalogContent() {
             </div>
           </div>
 
+          <div style={{ width: "100%", maxWidth: 520, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 999, background: "var(--surface)" }}>
+              離線已下載 {downloadedCount}/{downloadableChapterUrls.length} 章
+            </div>
+            {downloadedCount > 0 && (
+              <button
+                onClick={handleDeleteAllDownloads}
+                style={{ fontSize: 12, color: "#ffb3b3", background: "var(--surface)", border: "1px solid rgba(255,120,120,.35)", borderRadius: 999, padding: "6px 12px", cursor: "pointer" }}
+              >
+                刪除本書已下載
+              </button>
+            )}
+          </div>
+
+          {downloadMessage && (
+            <div style={{ fontSize: 12, color: "var(--accent)", textAlign: "center", lineHeight: 1.5, maxWidth: 560 }}>
+              {downloadMessage}
+            </div>
+          )}
+
           {isSearching && (
             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>找到 {searchResults.length} 章</div>
           )}
@@ -354,6 +458,8 @@ function CatalogContent() {
               searchResults.map(({ ch, volTitle, volMatch }) => {
                 const isLast = !!ch.url && ch.url === lastChapterUrl;
                 const isVisited = !!ch.url && !!visitedChapters[ch.url];
+                const isDownloaded = !!ch.url && !!downloadedMap[ch.url];
+                const isDownloading = !!ch.url && downloadingChapterUrl === ch.url;
                 const volLabel = volMatch
                   ? <span style={{ fontSize: 10, color: "var(--text-dim)", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 6px", whiteSpace: "nowrap", flexShrink: 0, marginRight: isLast ? 6 : 0 }}>
                       {highlightMatch(volTitle || "章節列表", trimmedQuery)}
@@ -382,6 +488,11 @@ function CatalogContent() {
                     ) : (
                       <span style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: isVisited ? "var(--border)" : "var(--accent)", display: "inline-block" }} />
                     )}
+                    {isDownloaded && (
+                      <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(120,200,140,.12)", color: "#84d29a", padding: "2px 7px", borderRadius: 999, whiteSpace: "nowrap", flexShrink: 0 }}>
+                        已下載
+                      </span>
+                    )}
                   </>
                 );
                 const chKey = ch.url || `locked-${volTitle}-${ch.title}`;
@@ -396,15 +507,23 @@ function CatalogContent() {
                   );
                 }
                 return (
-                  <Link
-                    key={chKey}
-                    id={`ch-${chKey}`}
-                    prefetch={false}
-                    href={`/read?url=${encodeURIComponent(ch.url!)}&catalog=${encodeURIComponent(catalogUrl)}`}
-                    style={srStyle}
-                    onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
-                    onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
-                  >{srInner}</Link>
+                  <div key={chKey} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Link
+                      id={`ch-${chKey}`}
+                      prefetch={false}
+                      href={`/read?url=${encodeURIComponent(ch.url!)}&catalog=${encodeURIComponent(catalogUrl)}`}
+                      style={{ ...srStyle, flex: 1, minWidth: 0 }}
+                      onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
+                      onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
+                    >{srInner}</Link>
+                    <button
+                      onClick={() => isDownloaded ? handleDeleteChapterDownload(ch) : handleChapterDownload(ch)}
+                      disabled={isDownloading}
+                      style={{ fontSize: 11, borderRadius: 999, padding: "6px 10px", border: "1px solid var(--border)", background: "var(--surface)", color: isDownloaded ? "#ffb3b3" : "var(--accent)", cursor: isDownloading ? "progress" : "pointer", whiteSpace: "nowrap", flexShrink: 0 }}
+                    >
+                      {isDownloading ? "下載中…" : isDownloaded ? "刪除" : "預下載"}
+                    </button>
+                  </div>
                 );
               })
             )}
@@ -439,17 +558,43 @@ function CatalogContent() {
           const originalGi = sortDesc ? groups.length - 1 - gi : gi;
           const isCollapsed = !!collapsed[originalGi];
           const chaptersToShow = sortDesc ? [...group.chapters].reverse() : group.chapters;
+          const volumeUrls = chaptersToShow.map(ch => ch.url).filter((url): url is string => !!url && url !== "null");
+          const volumeDownloaded = volumeUrls.filter(url => downloadedMap[url]).length;
+          const volumeKey = `${originalGi}:${group.volTitle}`;
+          const volumeDownloading = downloadingVolumeKey === volumeKey;
 
           return (
             <div key={originalGi} style={{ marginBottom: 24 }}>
               {/* Volume title row */}
               <div
                 onClick={() => toggleCollapse(originalGi)}
-                style={{ display: "flex", alignItems: "center", gap: 8, padding: "14px 0 10px", borderBottom: "1px solid var(--border)", marginBottom: 0, cursor: "pointer", userSelect: "none" }}
+                style={{ display: "flex", alignItems: "center", gap: 8, padding: "14px 0 10px", borderBottom: "1px solid var(--border)", marginBottom: 0, cursor: "pointer", userSelect: "none", flexWrap: "wrap" }}
               >
                 <span style={{ fontSize: 12, letterSpacing: ".1em", color: "var(--text-muted)", fontWeight: 600, flex: 1 }}>
                   {group.volTitle || "章節列表"}
                 </span>
+                <span style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>
+                  已下載 {volumeDownloaded}/{volumeUrls.length}
+                </span>
+                {volumeUrls.length > 0 && (
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleVolumeDownload(group, originalGi); }}
+                      disabled={volumeDownloading || volumeDownloaded === volumeUrls.length}
+                      style={{ fontSize: 11, color: volumeDownloaded === volumeUrls.length ? "var(--text-dim)" : "var(--accent)", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 999, padding: "4px 10px", cursor: volumeDownloading ? "progress" : (volumeDownloaded === volumeUrls.length ? "default" : "pointer"), whiteSpace: "nowrap" }}
+                    >
+                      {volumeDownloading ? "下載中…" : volumeDownloaded === volumeUrls.length ? "已下載" : "預下載本卷"}
+                    </button>
+                    {volumeDownloaded > 0 && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteVolumeDownload(group); }}
+                        style={{ fontSize: 11, color: "#ffb3b3", background: "var(--surface)", border: "1px solid rgba(255,120,120,.35)", borderRadius: 999, padding: "4px 10px", cursor: "pointer", whiteSpace: "nowrap" }}
+                      >
+                        刪除此卷
+                      </button>
+                    )}
+                  </>
+                )}
                 <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
                   {isCollapsed ? `▶ ${group.chapters.length}章` : "▼"}
                 </span>
@@ -473,6 +618,8 @@ function CatalogContent() {
                      {chaptersToShow.map((ch, ci) => {
                        const isLast = !!ch.url && ch.url === lastChapterUrl;
                        const isVisited = !!ch.url && !!visitedChapters[ch.url];
+                       const isDownloaded = !!ch.url && !!downloadedMap[ch.url];
+                       const isDownloading = !!ch.url && downloadingChapterUrl === ch.url;
                        const chKey = ch.url || `locked-${ci}`;
                        const chStyle: React.CSSProperties = {
                          display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -494,6 +641,11 @@ function CatalogContent() {
                            ) : (
                              <span style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: isVisited ? "var(--border)" : "var(--accent)", display: "inline-block" }} />
                            )}
+                           {isDownloaded && (
+                             <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(120,200,140,.12)", color: "#84d29a", padding: "2px 7px", borderRadius: 999, whiteSpace: "nowrap", flexShrink: 0 }}>
+                               已下載
+                             </span>
+                           )}
                          </>
                        );
                        if (!ch.url || ch.url === "null") {
@@ -507,15 +659,23 @@ function CatalogContent() {
                          );
                        }
                        return (
-                         <Link
-                           key={chKey}
-                           id={`ch-${chKey}`}
-                           prefetch={false}
-                           href={`/read?url=${encodeURIComponent(ch.url!)}&catalog=${encodeURIComponent(catalogUrl)}`}
-                           style={chStyle}
-                           onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
-                           onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
-                         >{inner}</Link>
+                         <div key={chKey} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                           <Link
+                             id={`ch-${chKey}`}
+                             prefetch={false}
+                             href={`/read?url=${encodeURIComponent(ch.url!)}&catalog=${encodeURIComponent(catalogUrl)}`}
+                             style={{ ...chStyle, flex: 1, minWidth: 0 }}
+                             onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
+                             onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
+                           >{inner}</Link>
+                           <button
+                             onClick={() => isDownloaded ? handleDeleteChapterDownload(ch) : handleChapterDownload(ch)}
+                             disabled={isDownloading}
+                             style={{ fontSize: 11, borderRadius: 999, padding: "6px 10px", border: "1px solid var(--border)", background: "var(--surface)", color: isDownloaded ? "#ffb3b3" : "var(--accent)", cursor: isDownloading ? "progress" : "pointer", whiteSpace: "nowrap", flexShrink: 0 }}
+                           >
+                             {isDownloading ? "下載中…" : isDownloaded ? "刪除" : "預下載"}
+                           </button>
+                         </div>
                        );
                      })}
                   </div>

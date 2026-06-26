@@ -754,6 +754,9 @@ app.get("/api/catalog", async (req, reply) => {
         const chTitle = a.text().trim() || el.text().trim();
         if (!chTitle) return;
         const href = a.attr("href") || "";
+        const onclick = a.attr("onclick") || el.attr("onclick") || "";
+        const dataHref = a.attr("data-href") || a.attr("data-url") || el.attr("data-href") || el.attr("data-url") || "";
+        const cidSource = [href, onclick, dataHref].find(Boolean) || "";
         
         const novelIdMatch = fetchUrl.match(/\/novel\/(\d+)/);
         const novelId = novelIdMatch ? novelIdMatch[1] : "";
@@ -763,13 +766,17 @@ app.get("/api/catalog", async (req, reply) => {
           fullUrl = toTwLinovelib(href);
         } else if (href.startsWith("/") || href.startsWith("novel")) {
           fullUrl = TW_ORIGIN + (href.startsWith("/") ? href : "/" + href);
-        } else if (href.startsWith("javascript:cid")) {
-          const cidMatch = href.match(/cid\(\s*\d+\s*,\s*(\d+)\s*\)/);
+        } else if (dataHref.startsWith("http")) {
+          fullUrl = toTwLinovelib(dataHref);
+        } else if (dataHref.startsWith("/") || dataHref.startsWith("novel")) {
+          fullUrl = TW_ORIGIN + (dataHref.startsWith("/") ? dataHref : "/" + dataHref);
+        } else {
+          const cidMatch = cidSource.match(/cid\(\s*\d+\s*,\s*(\d+)\s*\)/);
           if (cidMatch && novelId) {
             fullUrl = TW_ORIGIN + `/novel/${novelId}/${cidMatch[1]}.html`;
           }
         }
-        
+
         if (!state.vol) state.vol = { volTitle: "", coverUrl: "", chapters: [] };
         state.vol.chapters.push({ title: chTitle, url: fullUrl });
       }

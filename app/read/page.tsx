@@ -20,6 +20,7 @@ import {
   saveSettings,
   ReaderSettings,
   getCatalogCache,
+  saveCatalogCache,
 } from "@/lib/history";
 import { parseChapterHtml } from "@/lib/chapter-parser";
 import { restoreChars } from "@/lib/linovelib-charmap";
@@ -106,6 +107,59 @@ function contentToNodes(content: string): ContentNode[] {
       
       return { type: "text" as const, text: line };
     });
+}
+
+function repairCatalogChapterUrls(
+  catalogUrl: string,
+  payload: { chapterUrl: string; title: string; prevUrl: string | null; nextUrl: string | null },
+): boolean {
+  const cachedCatalog = getCatalogCache(catalogUrl);
+  if (!cachedCatalog) return false;
+
+  const groups = cachedCatalog.groups.map(group => ({
+    ...group,
+    chapters: group.chapters.map(ch => ({ ...ch })),
+  }));
+  const flat: Array<{ chapter: { title: string; url: string | null }; groupIndex: number; chapterIndex: number }> = [];
+  groups.forEach((group, groupIndex) => {
+    group.chapters.forEach((chapter, chapterIndex) => {
+      flat.push({ chapter, groupIndex, chapterIndex });
+    });
+  });
+
+  const normalize = (url: string | null | undefined) => (url || "").split(/[?#]/)[0];
+  const targetPath = normalize(payload.chapterUrl);
+  let currentIndex = flat.findIndex(item => item.chapter.url && normalize(item.chapter.url) == targetPath);
+  if (currentIndex === -1) {
+    currentIndex = flat.findIndex(item => !item.chapter.url && item.chapter.title == payload.title);
+  }
+  if (currentIndex === -1) return false;
+
+  let changed = false;
+  const current = flat[currentIndex].chapter;
+  if (!current.url) {
+    current.url = payload.chapterUrl;
+    changed = true;
+  }
+  if (payload.prevUrl && currentIndex > 0 && !flat[currentIndex - 1].chapter.url) {
+    flat[currentIndex - 1].chapter.url = payload.prevUrl;
+    changed = true;
+  }
+  if (payload.nextUrl && currentIndex < flat.length - 1 && !flat[currentIndex + 1].chapter.url) {
+    flat[currentIndex + 1].chapter.url = payload.nextUrl;
+    changed = true;
+  }
+
+  if (!changed) return false;
+  saveCatalogCache(catalogUrl, {
+    title: cachedCatalog.title,
+    coverUrl: cachedCatalog.coverUrl,
+    author: cachedCatalog.author,
+    desc: cachedCatalog.desc,
+    tags: cachedCatalog.tags,
+    groups,
+  });
+  return true;
 }
 
 type Theme = "dark" | "sepia" | "light" | "amoled";
@@ -195,6 +249,7 @@ function ReadContent() {
   // UI Toggle & Drawer
   const [showUI, setShowUI] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [, setCatalogVersion] = useState(0);
   const catalog = catalogUrl ? getCatalogCache(catalogUrl) : null;
   const [visitedChapters, setVisitedChapters] = useState<Record<string, string>>({});
 
@@ -206,6 +261,12 @@ function ReadContent() {
       }
     }
   }, [catalogUrl, chapterUrl, drawerOpen]);
+
+  useEffect(() => {
+    if (!catalogUrl || !chapterUrl || !title || loading) return;
+    const repaired = repairCatalogChapterUrls(catalogUrl, { chapterUrl, title, prevUrl, nextUrl });
+    if (repaired) setCatalogVersion(v => v + 1);
+  }, [catalogUrl, chapterUrl, title, prevUrl, nextUrl, loading]);
 
   // Scroll to active chapter in drawer when opened
   useEffect(() => {
@@ -886,7 +947,7 @@ function ReadContent() {
                   return (
                     <div 
                       key={j} 
-                      id={`drawer-ch-${encodeURIComponent(ch.url!)}`}
+                      id={`drawer-ch-${encodeURIComponent(ch.url || `${vol.volTitle}-${j}-${ch.title}`)}` }
                       onClick={(e) => {
                         e.stopPropagation();
                         if (ch.url && !isActive) { setDrawerOpen(false); goChapter(ch.url); }

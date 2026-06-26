@@ -327,7 +327,7 @@ export function isInBookshelf(catalogUrl: string): boolean {
 // ---------------------------------------------------------------------------
 
 const CHAPTER_CACHE_KEY = "linovelib-chapter-cache";
-const MAX_CHAPTER_CACHE = 100;
+const MAX_CHAPTER_CACHE = 300;
 
 export type ContentNode = { type: "text"; text: string } | { type: "image"; src: string; alt: string } | { type: "page-number"; text: string };
 
@@ -337,13 +337,33 @@ export type ChapterCache = {
   nodes: ContentNode[];
   nextChapterUrl: string | null;
   prevChapterUrl?: string | null;
+  pinned?: boolean;
   cachedAt: number;
 };
+
+function loadChapterCacheMap(): Record<string, ChapterCache> {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(localStorage.getItem(CHAPTER_CACHE_KEY) ?? "{}") as Record<string, ChapterCache>;
+  } catch {
+    return {};
+  }
+}
+
+function saveChapterCacheMap(raw: Record<string, ChapterCache>): void {
+  const entries = Object.entries(raw)
+    .sort((a, b) => {
+      const pinDiff = Number(!!b[1].pinned) - Number(!!a[1].pinned);
+      return pinDiff || (b[1].cachedAt - a[1].cachedAt);
+    })
+    .slice(0, MAX_CHAPTER_CACHE);
+  localStorage.setItem(CHAPTER_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+}
 
 export function getChapterCache(chapterUrl: string): ChapterCache | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = JSON.parse(localStorage.getItem(CHAPTER_CACHE_KEY) ?? "{}") as Record<string, ChapterCache>;
+    const raw = loadChapterCacheMap();
     const entry = raw[chapterUrl];
     if (!entry) return null;
     return entry;
@@ -355,15 +375,35 @@ export function getChapterCache(chapterUrl: string): ChapterCache | null {
 export function saveChapterCache(chapterUrl: string, data: Omit<ChapterCache, "cachedAt">): void {
   if (typeof window === "undefined") return;
   try {
-    const raw = JSON.parse(localStorage.getItem(CHAPTER_CACHE_KEY) ?? "{}") as Record<string, ChapterCache>;
+    const raw = loadChapterCacheMap();
     raw[chapterUrl] = { ...data, cachedAt: Date.now() };
-    // Keep at most MAX_CHAPTER_CACHE entries; evict oldest
-    const entries = Object.entries(raw)
-      .sort((a, b) => b[1].cachedAt - a[1].cachedAt)
-      .slice(0, MAX_CHAPTER_CACHE);
-    localStorage.setItem(CHAPTER_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+    saveChapterCacheMap(raw);
   } catch {
     // Quota exceeded — silently ignore
+  }
+}
+
+export function removeChapterCache(chapterUrl: string): void {
+  if (typeof window === "undefined" || !chapterUrl) return;
+  try {
+    const raw = loadChapterCacheMap();
+    delete raw[chapterUrl];
+    localStorage.setItem(CHAPTER_CACHE_KEY, JSON.stringify(raw));
+  } catch {
+    // ignore
+  }
+}
+
+export function removeChapterCaches(chapterUrls: string[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = loadChapterCacheMap();
+    for (const chapterUrl of chapterUrls) {
+      if (chapterUrl) delete raw[chapterUrl];
+    }
+    localStorage.setItem(CHAPTER_CACHE_KEY, JSON.stringify(raw));
+  } catch {
+    // ignore
   }
 }
 
