@@ -20,6 +20,11 @@ export type OfflineDownloadProgress = {
   chapterTitle: string;
 };
 
+type DownloadBatchOptions = {
+  concurrency?: number;
+  onProgress?: (progress: OfflineDownloadProgress) => void;
+};
+
 async function fetchChapterPage(url: string, catalogUrl: string): Promise<ChapterPageApiResult> {
   const res = await fetch(`/api/chapter?url=${encodeURIComponent(url)}&catalogUrl=${encodeURIComponent(catalogUrl)}`);
   if (!res.ok) {
@@ -48,6 +53,62 @@ function contentToNodes(content: string): ContentNode[] {
     });
 }
 
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Failed to read blob"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function fetchMediaAsDataUrl(url: string): Promise<string> {
+  const res = await fetch(`/api/image?url=${encodeURIComponent(url)}`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Image HTTP ${res.status}: ${text}`);
+  }
+  const blob = await res.blob();
+  return blobToDataUrl(blob);
+}
+
+async function mapWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  let cursor = 0;
+  const count = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(
+    Array.from({ length: count }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        await worker(items[index], index);
+      }
+    }),
+  );
+}
+
+async function embedOfflineMedia(nodes: ContentNode[]): Promise<ContentNode[]> {
+  const nextNodes = [...nodes];
+  const imageIndexes = nextNodes
+    .map((node, index) => ({ node, index }))
+    .filter((entry): entry is { node: Extract<ContentNode, { type: "image" }>; index: number } => entry.node.type === "image" && /^https?:\/\//.test(entry.node.src));
+
+  const cache = new Map<string, string>();
+
+  // ponytail: keep media embedding concurrency low to avoid hammering the image proxy and blowing browser memory; raise if users need faster bulk art caching.
+  await mapWithConcurrency(imageIndexes, 3, async ({ node, index }) => {
+    if (!cache.has(node.src)) {
+      cache.set(node.src, await fetchMediaAsDataUrl(node.src));
+    }
+    nextNodes[index] = { ...node, src: cache.get(node.src)! };
+  });
+
+  return nextNodes;
+}
+
 export async function downloadChapterForOffline(chapterUrl: string, catalogUrl: string): Promise<{ title: string; alreadyDownloaded: boolean }> {
   const cached = getChapterCache(chapterUrl);
   if (cached) {
@@ -56,7 +117,7 @@ export async function downloadChapterForOffline(chapterUrl: string, catalogUrl: 
 
   const firstPage = await fetchChapterPage(chapterUrl, catalogUrl);
   firstPage.content = restoreChars(firstPage.content || "");
-  const allNodes = [...contentToNodes(firstPage.content)];
+  let allNodes = [...contentToNodes(firstPage.content)];
   const chapterTitle = firstPage.title || "未命名章節";
 
   let nextPage = firstPage.nextPageUrl;
@@ -68,6 +129,8 @@ export async function downloadChapterForOffline(chapterUrl: string, catalogUrl: 
     lastPage = pageData;
     nextPage = pageData.nextPageUrl;
   }
+
+  allNodes = await embedOfflineMedia(allNodes);
 
   saveChapterCache(chapterUrl, {
     title: chapterTitle,
@@ -84,26 +147,27 @@ export async function downloadChapterForOffline(chapterUrl: string, catalogUrl: 
 export async function downloadChaptersForOffline(
   chapterUrls: string[],
   catalogUrl: string,
-  onProgress?: (progress: OfflineDownloadProgress) => void,
+  options?: DownloadBatchOptions,
 ): Promise<{ completed: number; skipped: number }> {
   const normalized = Array.from(new Set(chapterUrls.filter(Boolean)));
   let completed = 0;
   let skipped = 0;
+  const concurrency = Math.max(1, options?.concurrency ?? 4);
 
-  for (const chapterUrl of normalized) {
+  await mapWithConcurrency(normalized, concurrency, async chapterUrl => {
     const result = await downloadChapterForOffline(chapterUrl, catalogUrl);
     if (result.alreadyDownloaded) {
       skipped += 1;
     } else {
       completed += 1;
     }
-    onProgress?.({
+    options?.onProgress?.({
       completed: completed + skipped,
       total: normalized.length,
       chapterUrl,
       chapterTitle: result.title,
     });
-  }
+  });
 
   return { completed, skipped };
 }

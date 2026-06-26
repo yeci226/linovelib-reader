@@ -43,4 +43,7 @@ next-env.d.ts
 # local fetch cache
 /.cache/
 
+# local backend data
+/backend/data/
+
 .vercel

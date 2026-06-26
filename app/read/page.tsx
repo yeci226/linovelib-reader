@@ -109,6 +109,10 @@ function contentToNodes(content: string): ContentNode[] {
     });
 }
 
+function resolveRenderableImageSrc(src: string): string {
+  return src.startsWith("data:") ? src : `/api/image?url=${encodeURIComponent(src)}`;
+}
+
 function repairCatalogChapterUrls(
   catalogUrl: string,
   payload: { chapterUrl: string; title: string; prevUrl: string | null; nextUrl: string | null },
@@ -788,7 +792,7 @@ function ReadContent() {
               ) : (
                 <div key={i} className="chapter-node" data-node-idx={i} style={{ textAlign: "center", margin: "2em 0" }}>
                   <img
-                    src={`/api/image?url=${encodeURIComponent(node.src)}`}
+                    src={resolveRenderableImageSrc(node.src)}
                     alt={node.alt}
                     loading="lazy"
                     style={{ maxWidth: "100%", maxHeight: 480, objectFit: "contain", borderRadius: 6, border: "1px solid var(--border)", cursor: "zoom-in" }}
@@ -986,7 +990,7 @@ function ReadContent() {
           onClick={() => setZoomedImg(null)}
         >
           <img
-            src={`/api/image?url=${encodeURIComponent(zoomedImg)}`}
+            src={resolveRenderableImageSrc(zoomedImg)}
             alt="Zoomed"
             style={{ maxWidth: "100vw", maxHeight: "100vh", objectFit: "contain", userSelect: "none" }}
           />
