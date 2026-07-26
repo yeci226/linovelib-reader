@@ -2,6 +2,9 @@
 import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthToken, getUsernameFromToken } from "@/lib/sync";
+import { getCatalogCache, getChapterCache } from "@/lib/history";
+import { canOpenOfflineResource } from "@/lib/offline-access";
+import { useOnlineStatus } from "@/lib/use-online-status";
 import { StarIcon, ArrowUpIcon, ArrowDownIcon, ImagePlaceholderIcon } from "@/components/icons";
 
 interface RecentRead {
@@ -23,6 +26,7 @@ interface RecentRead {
 
 export function CommunityHall() {
   const router = useRouter();
+  const isOnline = useOnlineStatus();
   const [recents, setRecents] = useState<RecentRead[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -136,6 +140,20 @@ export function CommunityHall() {
           {filteredAndSorted.map((item, idx) => {
             const isSelf = item.username === currentUsername;
             const highlight = isSelf || item.isFollowing;
+            const canOpenCatalog = canOpenOfflineResource(isOnline, !!getCatalogCache(item.catalogUrl));
+            const canOpenLastChapter = !!item.lastChapterUrl && canOpenOfflineResource(isOnline, !!getChapterCache(item.lastChapterUrl));
+            const openCatalog = () => {
+              if (!canOpenCatalog) return;
+              const href = `/catalog?url=${encodeURIComponent(item.catalogUrl)}`;
+              if (isOnline) router.push(href);
+              else window.location.assign(href);
+            };
+            const openLastChapter = () => {
+              if (!item.lastChapterUrl || !canOpenLastChapter) return;
+              const href = `/read?url=${encodeURIComponent(item.lastChapterUrl)}&catalog=${encodeURIComponent(item.catalogUrl)}`;
+              if (isOnline) router.push(href);
+              else window.location.assign(href);
+            };
             
             return (
               <div 
@@ -149,11 +167,13 @@ export function CommunityHall() {
                 }}
               >
                 <div 
-                  onClick={() => router.push(`/catalog?url=${encodeURIComponent(item.catalogUrl)}`)}
+                  onClick={openCatalog}
+                  aria-disabled={!canOpenCatalog}
+                  title={canOpenCatalog ? item.novelTitle : "此小說目錄尚未快取，離線時無法開啟"}
                   style={{ 
                     width: 100, 
                     height: 140, 
-                    borderRadius: 8, flexShrink: 0, overflow: "hidden", background: "var(--surface2)", cursor: "pointer",
+                    borderRadius: 8, flexShrink: 0, overflow: "hidden", background: "var(--surface2)", cursor: canOpenCatalog ? "pointer" : "not-allowed", opacity: canOpenCatalog ? 1 : 0.45,
                   }}
                 >
                   {item.coverUrl ? (
@@ -176,8 +196,9 @@ export function CommunityHall() {
                     {token && !isSelf && (
                       <button 
                         onClick={(e) => { e.stopPropagation(); handleFollow(item.userId); }}
-                        style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 16, opacity: item.isFollowing ? 1 : 0.4, color: item.isFollowing ? "#eab308" : "var(--text-muted)", display: "flex", alignItems: "center" }}
-                        title={item.isFollowing ? "取消追隨" : "追隨"}
+                        disabled={!isOnline}
+                        style={{ background: "none", border: "none", padding: 0, cursor: isOnline ? "pointer" : "not-allowed", fontSize: 16, opacity: isOnline ? (item.isFollowing ? 1 : 0.4) : 0.2, color: item.isFollowing ? "#eab308" : "var(--text-muted)", display: "flex", alignItems: "center" }}
+                        title={!isOnline ? "離線時無法變更追隨狀態" : item.isFollowing ? "取消追隨" : "追隨"}
                       >
                         <StarIcon fill={item.isFollowing ? "currentColor" : "none"} />
                       </button>
@@ -186,8 +207,10 @@ export function CommunityHall() {
 
                   {/* Novel Info */}
                   <div 
-                    onClick={() => router.push(`/catalog?url=${encodeURIComponent(item.catalogUrl)}`)}
-                    style={{ fontSize: 16, fontWeight: 700, color: "var(--text)", marginBottom: 4, lineHeight: 1.3, cursor: "pointer", whiteSpace: "normal", wordBreak: "break-word", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+                    onClick={openCatalog}
+                    aria-disabled={!canOpenCatalog}
+                    title={canOpenCatalog ? item.novelTitle : "此小說目錄尚未快取，離線時無法開啟"}
+                    style={{ fontSize: 16, fontWeight: 700, color: "var(--text)", marginBottom: 4, lineHeight: 1.3, cursor: canOpenCatalog ? "pointer" : "not-allowed", opacity: canOpenCatalog ? 1 : 0.45, whiteSpace: "normal", wordBreak: "break-word", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
                   >
                     {item.novelTitle}
                   </div>
@@ -197,7 +220,7 @@ export function CommunityHall() {
                     </div>
                   )}
                   {item.desc && (
-                    <div className="book-desc" onClick={() => router.push(`/catalog?url=${encodeURIComponent(item.catalogUrl)}`)} style={{ cursor: "pointer", fontSize: 13, lineHeight: 1.6, whiteSpace: "nowrap", display: "block", overflow: "hidden", textOverflow: "clip" }}>
+                    <div className="book-desc" onClick={openCatalog} aria-disabled={!canOpenCatalog} title={canOpenCatalog ? item.desc : "此小說目錄尚未快取，離線時無法開啟"} style={{ cursor: canOpenCatalog ? "pointer" : "not-allowed", opacity: canOpenCatalog ? 1 : 0.45, fontSize: 13, lineHeight: 1.6, whiteSpace: "nowrap", display: "block", overflow: "hidden", textOverflow: "clip" }}>
                       {item.desc}
                     </div>
                   )}
@@ -205,11 +228,14 @@ export function CommunityHall() {
                   {/* Reading Progress */}
                   {(item.volTitle || item.lastChapterTitle) && (
                     <div 
-                      onClick={() => item.lastChapterUrl && router.push(`/read?url=${encodeURIComponent(item.lastChapterUrl)}&catalog=${encodeURIComponent(item.catalogUrl)}`)}
+                      onClick={openLastChapter}
+                      aria-disabled={!canOpenLastChapter}
+                      title={canOpenLastChapter ? item.lastChapterTitle : "此章尚未下載，離線時無法開啟"}
                       style={{ 
                         marginTop: 4, padding: "6px 10px", background: "var(--surface2)", borderRadius: 6, 
                         border: "1px solid var(--border)", color: "var(--text)", 
-                        cursor: item.lastChapterUrl ? "pointer" : "default",
+                        cursor: canOpenLastChapter ? "pointer" : "not-allowed",
+                        opacity: canOpenLastChapter ? 1 : 0.45,
                         display: "flex", flexDirection: "column", gap: 2, overflow: "hidden"
                       }}
                     >

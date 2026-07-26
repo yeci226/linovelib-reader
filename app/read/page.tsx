@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useRef, Suspense } from "react";
+import { useEffect, useState, useRef, useMemo, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
   saveProgress,
@@ -14,6 +14,7 @@ import {
   getBookmarksForChapter,
   removeBookmark,
   getChapterCache,
+  getCachedChapterUrls,
   saveChapterCache,
   Bookmark,
   loadSettings,
@@ -24,6 +25,8 @@ import {
 } from "@/lib/history";
 import { parseChapterHtml } from "@/lib/chapter-parser";
 import { restoreChars } from "@/lib/linovelib-charmap";
+import { canOpenOfflineResource } from "@/lib/offline-access";
+import { useOnlineStatus } from "@/lib/use-online-status";
 import { CloseIcon, SunIcon, MoonIcon, ScrollIcon, BookmarkIcon, CircleIcon } from "@/components/icons";
 import { CommentBoard } from "@/components/CommentBoard";
 
@@ -180,6 +183,7 @@ const LINE_HEIGHTS = [1.7, 1.95, 2.4] as const;
 function ReadContent() {
   const params = useSearchParams();
   const router = useRouter();
+  const isOnline = useOnlineStatus();
   const urlParam = params.get("url");
   const chapterUrl = (urlParam && urlParam !== "null") ? urlParam : "";
   const catalogUrl = params.get("catalog") || "";
@@ -255,6 +259,10 @@ function ReadContent() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [, setCatalogVersion] = useState(0);
   const catalog = catalogUrl ? getCatalogCache(catalogUrl) : null;
+  const cachedChapterUrls = useMemo(
+    () => isOnline ? new Set<string>() : getCachedChapterUrls(),
+    [isOnline, drawerOpen, chapterUrl],
+  );
   const [visitedChapters, setVisitedChapters] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -454,6 +462,14 @@ function ReadContent() {
     // Check cache first — may already be shown from synchronous init
     const cached = getChapterCache(chapterUrl);
 
+    if (!cached && !navigator.onLine) {
+      setNodes([]);
+      setError("此章尚未下載，請連上網路後再開啟");
+      setLoading(false);
+      setLoadingMore(false);
+      return;
+    }
+
     if (!cached) {
       setLoading(true);
     }
@@ -635,16 +651,22 @@ function ReadContent() {
   };
 
   const goBack = () => {
-    if (params.get("from") === "home") {
-      router.replace(`/catalog?url=${encodeURIComponent(catalogUrl)}`);
+    const catalogHref = `/catalog?url=${encodeURIComponent(catalogUrl)}`;
+    if (!isOnline && getCatalogCache(catalogUrl)) {
+      window.location.assign(catalogHref);
+    } else if (params.get("from") === "home") {
+      router.replace(catalogHref);
     } else {
       router.back();
     }
   };
 
   const goChapter = (url: string) => {
+    if (!canOpenOfflineResource(isOnline, !!getChapterCache(url))) return;
     const fromParam = params.get("from") ? `&from=${params.get("from")}` : "";
-    router.replace(`/read?url=${encodeURIComponent(url)}&catalog=${encodeURIComponent(catalogUrl)}${fromParam}`);
+    const href = `/read?url=${encodeURIComponent(url)}&catalog=${encodeURIComponent(catalogUrl)}${fromParam}`;
+    if (isOnline) router.replace(href);
+    else window.location.assign(href);
   };
 
   const cycleTheme = () => {
@@ -707,6 +729,9 @@ function ReadContent() {
       behavior: "smooth"
     });
   };
+
+  const canOpenPrev = !!prevUrl && canOpenOfflineResource(isOnline, cachedChapterUrls.has(prevUrl));
+  const canOpenNext = !!nextUrl && canOpenOfflineResource(isOnline, cachedChapterUrls.has(nextUrl));
 
   const btnStyle: React.CSSProperties = {
     background: "var(--surface)",
@@ -814,9 +839,10 @@ function ReadContent() {
         {!loading && !error && (
           <div style={{ borderTop: "1px solid var(--border)", marginTop: 60, padding: "24px 0 56px", display: "flex", alignItems: "stretch", justifyContent: "space-between", gap: 10 }}>
             <button
-              onClick={() => prevUrl && goChapter(prevUrl)}
-              disabled={!prevUrl}
-              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0, opacity: prevUrl ? 1 : 0.3, textAlign: "left", cursor: prevUrl ? "pointer" : "default" }}
+              onClick={() => canOpenPrev && prevUrl && goChapter(prevUrl)}
+              disabled={!canOpenPrev}
+              title={prevUrl && !canOpenPrev ? "上一章尚未下載，離線時無法開啟" : undefined}
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0, opacity: canOpenPrev ? 1 : 0.3, textAlign: "left", cursor: canOpenPrev ? "pointer" : "default" }}
             >
               <span style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>← 上一章</span>
               <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{prevTitle || "上一章"}</span>
@@ -825,9 +851,10 @@ function ReadContent() {
               回到目錄
             </button>
             <button
-              onClick={() => nextUrl && goChapter(nextUrl)}
-              disabled={!nextUrl}
-              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0, opacity: nextUrl ? 1 : 0.3, alignItems: "flex-end", cursor: nextUrl ? "pointer" : "default", textAlign: "right" }}
+              onClick={() => canOpenNext && nextUrl && goChapter(nextUrl)}
+              disabled={!canOpenNext}
+              title={nextUrl && !canOpenNext ? "下一章尚未下載，離線時無法開啟" : undefined}
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0, opacity: canOpenNext ? 1 : 0.3, alignItems: "flex-end", cursor: canOpenNext ? "pointer" : "default", textAlign: "right" }}
             >
               <span style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>下一章 →</span>
               <span style={{ fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>{nextTitle || "下一章"}</span>
@@ -948,13 +975,16 @@ function ReadContent() {
                 {vol.chapters.map((ch, j) => {
                   const isActive = ch.url === chapterUrl;
                   const isVisited = !!ch.url && !!visitedChapters[ch.url];
+                  const canOpen = isActive || (!!ch.url && canOpenOfflineResource(isOnline, cachedChapterUrls.has(ch.url)));
                   return (
                     <div 
                       key={j} 
                       id={`drawer-ch-${encodeURIComponent(ch.url || `${vol.volTitle}-${j}-${ch.title}`)}` }
+                      aria-disabled={!canOpen}
+                      title={canOpen ? ch.title : "此章尚未下載，離線時無法開啟"}
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (ch.url && !isActive) { setDrawerOpen(false); goChapter(ch.url); }
+                        if (canOpen && ch.url && !isActive) { setDrawerOpen(false); goChapter(ch.url); }
                       }}
                       style={{ 
                         margin: "2px 8px",
@@ -963,7 +993,8 @@ function ReadContent() {
                         fontSize: 14, 
                         color: isActive ? "var(--accent)" : "var(--text)",
                         fontWeight: isActive ? "bold" : "normal",
-                        cursor: "pointer",
+                        cursor: canOpen ? "pointer" : "not-allowed",
+                        opacity: canOpen ? 1 : 0.4,
                         border: isActive ? "1px solid rgba(200,169,110,.4)" : "1px solid transparent",
                         boxShadow: isActive ? "0 2px 8px rgba(200,169,110,.15)" : "none",
                         background: isActive ? "var(--surface)" : "transparent",

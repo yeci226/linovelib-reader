@@ -3,7 +3,9 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { SettingsIcon, ImagePlaceholderIcon, UsersIcon, BookIcon, StarIcon } from "@/components/icons";
-import { getHistory, getCatalogCache, removeHistory, type HistoryEntry } from "@/lib/history";
+import { getHistory, getCatalogCache, getChapterCache, removeHistory, type HistoryEntry } from "@/lib/history";
+import { canOpenOfflineResource } from "@/lib/offline-access";
+import { useOnlineStatus } from "@/lib/use-online-status";
 import { CommunityHall } from "@/components/CommunityHall";
 import { getAuthToken, getUsernameFromToken, triggerSyncPull } from "@/lib/sync";
 
@@ -18,6 +20,7 @@ type DiscoverItem = {
 
 export default function Home() {
   const router = useRouter();
+  const isOnline = useOnlineStatus();
   
   // Library State
   const [tab, setTab] = useState<"wenku" | "top" | "community">("wenku");
@@ -113,7 +116,13 @@ export default function Home() {
     fetchData(tab, page, searchQuery, searchType);
   }, [page]);
 
+  const navigateRoute = (href: string) => {
+    if (isOnline) router.push(href);
+    else window.location.assign(href);
+  };
+
   const handleNav = (url: string) => {
+    if (!canOpenOfflineResource(isOnline, !!getCatalogCache(url))) return;
     const state = {
       tab,
       page,
@@ -133,16 +142,18 @@ export default function Home() {
       }));
     }
 
-    router.push(`/catalog?url=${encodeURIComponent(url)}`);
+    navigateRoute(`/catalog?url=${encodeURIComponent(url)}`);
   };
 
   const resumeReading = (entry: HistoryEntry) => {
     if (entry.lastChapterUrl) {
-      router.push(
+      if (!canOpenOfflineResource(isOnline, !!getChapterCache(entry.lastChapterUrl))) return;
+      navigateRoute(
         `/read?url=${encodeURIComponent(entry.lastChapterUrl)}&catalog=${encodeURIComponent(entry.catalogUrl)}&from=home`
       );
     } else {
-      router.push(`/catalog?url=${encodeURIComponent(entry.catalogUrl)}`);
+      if (!canOpenOfflineResource(isOnline, !!getCatalogCache(entry.catalogUrl))) return;
+      navigateRoute(`/catalog?url=${encodeURIComponent(entry.catalogUrl)}`);
     }
   };
 
@@ -215,6 +226,7 @@ export default function Home() {
 
   const renderBookCard = (item: DiscoverItem, index: number, rank: number | null, isHero: boolean = false, isTop23: boolean = false) => {
     const cached = getCatalogCache(item.url);
+    const canOpen = canOpenOfflineResource(isOnline, !!cached);
     const coverUrl = cached?.coverUrl || item.coverUrl;
     const tags = item.tags?.length ? item.tags : cached?.tags || [];
 
@@ -222,6 +234,7 @@ export default function Home() {
       <div 
         key={item.url} 
         className="book-card"
+        title={canOpen ? item.title : "此小說尚未快取，離線時無法開啟"}
         style={
           isHero ? { gridColumn: "1 / 2", gridRow: "1 / 3", padding: 24, gap: 24 } : 
           isTop23 ? { gridColumn: "2 / 3", padding: 16 } : 
@@ -242,7 +255,7 @@ export default function Home() {
           style={{ 
             width: isHero ? 180 : 100, 
             height: isHero ? 252 : 140, 
-            borderRadius: 8, flexShrink: 0, overflow: "hidden", background: "var(--surface2)", cursor: "pointer",
+            borderRadius: 8, flexShrink: 0, overflow: "hidden", background: "var(--surface2)", cursor: canOpen ? "pointer" : "not-allowed", opacity: canOpen ? 1 : 0.45,
             boxShadow: isHero ? "0 4px 16px rgba(0,0,0,0.2)" : "none"
           }}
         >
@@ -255,14 +268,14 @@ export default function Home() {
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
           <div 
             onClick={() => handleNav(item.url)}
-            style={{ fontSize: isHero ? 24 : 16, fontWeight: 700, color: "var(--text)", marginBottom: isHero ? 8 : 4, lineHeight: 1.3, cursor: "pointer", whiteSpace: "normal", wordBreak: "break-word" }}
+            style={{ fontSize: isHero ? 24 : 16, fontWeight: 700, color: "var(--text)", marginBottom: isHero ? 8 : 4, lineHeight: 1.3, cursor: canOpen ? "pointer" : "not-allowed", opacity: canOpen ? 1 : 0.55, whiteSpace: "normal", wordBreak: "break-word" }}
           >
             {item.title}
           </div>
           <div style={{ fontSize: isHero ? 14 : 12, color: "var(--accent)", marginBottom: isHero ? 16 : 8 }}>
             <span className="clickable-text" onClick={() => handleQuickSearch(item.author)}>{item.author}</span>
           </div>
-          <div className="book-desc" title={item.desc} onClick={() => handleNav(item.url)} style={{ cursor: "pointer", fontSize: isHero ? 15 : 13, lineHeight: 1.6, whiteSpace: (isHero || isTop23) ? "normal" : "nowrap", display: "block", overflow: "hidden", textOverflow: (isHero || isTop23) ? "unset" : "ellipsis" }}>
+          <div className="book-desc" title={item.desc} onClick={() => handleNav(item.url)} style={{ cursor: canOpen ? "pointer" : "not-allowed", opacity: canOpen ? 1 : 0.55, fontSize: isHero ? 15 : 13, lineHeight: 1.6, whiteSpace: (isHero || isTop23) ? "normal" : "nowrap", display: "block", overflow: "hidden", textOverflow: (isHero || isTop23) ? "unset" : "ellipsis" }}>
             {item.desc}
           </div>
           {tags && tags.length > 0 && (() => {
@@ -327,15 +340,22 @@ export default function Home() {
       }
     }
 
+    const canResume = entry.lastChapterUrl
+      ? canOpenOfflineResource(isOnline, !!getChapterCache(entry.lastChapterUrl))
+      : canOpenOfflineResource(isOnline, !!cachedForVol);
+
     return (
       <div 
         key={`history-${entry.catalogUrl}`} 
         className="book-card history-card-style" 
-        onClick={() => resumeReading(entry)}
+        onClick={() => canResume && resumeReading(entry)}
+        aria-disabled={!canResume}
+        title={canResume ? (entry.lastChapterTitle || entry.novelTitle) : "上次閱讀章節尚未下載，離線時無法開啟"}
         style={{
           border: "2px solid var(--accent)",
           background: "var(--surface)",
-          cursor: "pointer"
+          cursor: canResume ? "pointer" : "not-allowed",
+          opacity: canResume ? 1 : 0.5,
         }}
       >
         <button 
@@ -502,7 +522,7 @@ export default function Home() {
       <div style={{ position: "relative", width: "100%", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: "48px", paddingBottom: "24px" }}>
         <div style={{ position: "absolute", top: 16, right: 16, display: "flex", gap: 12 }}>
           <button 
-            onClick={() => router.push("/settings")} 
+            onClick={() => { if (isOnline) router.push("/settings"); else window.location.assign("/settings"); }}
             style={{ 
               background: "var(--surface2)", border: "1px solid var(--border)", 
               padding: username ? 0 : "8px 16px", 

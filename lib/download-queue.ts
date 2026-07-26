@@ -1,3 +1,29 @@
+export async function mapWithConcurrencySettled<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  if (items.length === 0) return [];
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        try {
+          results[index] = { status: "fulfilled", value: await worker(items[index], index) };
+        } catch (reason) {
+          results[index] = { status: "rejected", reason };
+        }
+      }
+    }),
+  );
+
+  return results;
+}
+
 export function createRequestQueue(minIntervalMs: number) {
   let tail = Promise.resolve();
   let nextStartAt = 0;

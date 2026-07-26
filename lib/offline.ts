@@ -4,7 +4,7 @@ import { parseChapterHtml } from "./chapter-parser";
 import { saveChapterCache, getChapterCache, type ContentNode } from "./history";
 import { restoreChars } from "./linovelib-charmap";
 import { getChapterProgressPercent, type ChapterProgressInput } from "./download-progress";
-import { createRequestQueue, retryAfterMs } from "./download-queue";
+import { createRequestQueue, mapWithConcurrencySettled, retryAfterMs } from "./download-queue";
 
 type ChapterPageApiResult = {
   title: string;
@@ -20,6 +20,8 @@ export type OfflineDownloadProgress = {
   total: number;
   chapterUrl: string;
   chapterTitle: string;
+  failed?: boolean;
+  error?: string;
 };
 
 export type OfflineChapterProgress = ChapterProgressInput & {
@@ -199,26 +201,44 @@ export async function downloadChaptersForOffline(
   chapterUrls: string[],
   catalogUrl: string,
   options?: DownloadBatchOptions,
-): Promise<{ completed: number; skipped: number }> {
+): Promise<{ completed: number; skipped: number; failed: number }> {
   const normalized = Array.from(new Set(chapterUrls.filter(Boolean)));
   let completed = 0;
   let skipped = 0;
+  let failed = 0;
+  let settled = 0;
   const concurrency = Math.max(1, options?.concurrency ?? 4);
 
-  await mapWithConcurrency(normalized, concurrency, async chapterUrl => {
-    const result = await downloadChapterForOffline(chapterUrl, catalogUrl, options?.onChapterProgress);
-    if (result.alreadyDownloaded) {
-      skipped += 1;
-    } else {
-      completed += 1;
+  await mapWithConcurrencySettled(normalized, concurrency, async chapterUrl => {
+    try {
+      const result = await downloadChapterForOffline(chapterUrl, catalogUrl, options?.onChapterProgress);
+      if (result.alreadyDownloaded) {
+        skipped += 1;
+      } else {
+        completed += 1;
+      }
+      settled += 1;
+      options?.onProgress?.({
+        completed: settled,
+        total: normalized.length,
+        chapterUrl,
+        chapterTitle: result.title,
+      });
+      return result;
+    } catch (error) {
+      failed += 1;
+      settled += 1;
+      options?.onProgress?.({
+        completed: settled,
+        total: normalized.length,
+        chapterUrl,
+        chapterTitle: "下載失敗",
+        failed: true,
+        error: String(error),
+      });
+      throw error;
     }
-    options?.onProgress?.({
-      completed: completed + skipped,
-      total: normalized.length,
-      chapterUrl,
-      chapterTitle: result.title,
-    });
   });
 
-  return { completed, skipped };
+  return { completed, skipped, failed };
 }

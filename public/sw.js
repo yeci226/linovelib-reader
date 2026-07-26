@@ -1,7 +1,7 @@
-const CACHE_NAME = "linovelib-v1";
-const IMAGE_CACHE_NAME = "linovelib-images-v1";
+const CACHE_NAME = "linovelib-v2";
+const IMAGE_CACHE_NAME = "linovelib-images-v2";
 const IMAGE_CACHE_MAX = 200;
-const PRECACHE_URLS = ["/", "/catalog", "/read"];
+const PRECACHE_URLS = ["/", "/catalog", "/read", "/bookshelf", "/settings"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -37,7 +37,14 @@ async function networkFirst(request, cacheName) {
   }
 }
 
-
+async function networkFirstNavigation(request) {
+  try {
+    return await fetch(request);
+  } catch {
+    const pathname = new URL(request.url).pathname;
+    return (await caches.match(pathname)) || (await caches.match("/")) || Response.error();
+  }
+}
 
 async function cacheFirstImage(request) {
   const cache = await caches.open(IMAGE_CACHE_NAME);
@@ -75,10 +82,16 @@ async function trimImageCache(cache) {
 }
 
 self.addEventListener("fetch", (event) => {
-  const { url } = event.request;
-  if (url.includes("/api/image")) {
-    event.respondWith(cacheFirstImage(event.request));
+  const request = event.request;
+  const url = new URL(request.url);
+
+  if (request.method !== "GET" || url.origin !== self.location.origin) return;
+
+  if (request.mode === "navigate") {
+    event.respondWith(networkFirstNavigation(request));
+  } else if (url.pathname === "/api/image") {
+    event.respondWith(cacheFirstImage(request));
   } else {
-    event.respondWith(networkFirst(event.request));
+    event.respondWith(networkFirst(request));
   }
 });

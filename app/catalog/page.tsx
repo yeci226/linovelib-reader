@@ -1,11 +1,14 @@
 "use client";
 import { useEffect, useMemo, useRef, useState, Suspense, type ReactNode } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import Link from "next/link";
 import { getEntryFor, saveProgress, getCatalogCache, saveCatalogCache, getChapterCache, removeChapterCache, removeChapterCaches, type HistoryEntry } from "@/lib/history";
 import { downloadChapterForOffline, downloadChaptersForOffline } from "@/lib/offline";
 import { getVolumeProgressPercent } from "@/lib/download-progress";
+import { createRequestQueue } from "@/lib/download-queue";
+import { canOpenOfflineResource } from "@/lib/offline-access";
+import { useOnlineStatus } from "@/lib/use-online-status";
 import { ImagePlaceholderIcon, GalleryIcon, DownloadIcon, CheckIcon, TrashIcon } from "@/components/icons";
+import { OfflineAwareLink } from "@/components/OfflineAwareLink";
 import { CommentBoard } from "@/components/CommentBoard";
 
 interface Chapter { title: string; url: string | null }
@@ -14,6 +17,11 @@ interface VolumeGroup {
   coverUrl: string;
   chapters: Chapter[];
 }
+
+// Volume jobs are intentionally serialized. Chapter workers inside the active
+// volume may still run concurrently, but a second volume cannot start until
+// the previous volume has completely settled.
+const enqueueVolumeDownload = createRequestQueue(0);
 
 async function fetchCatalog(url: string): Promise<{ title: string; coverUrl: string; groups: VolumeGroup[]; author?: string; desc?: string; tags?: string[] }> {
   const res = await fetch(`/api/catalog?url=${encodeURIComponent(url)}`);
@@ -70,6 +78,8 @@ function CatalogContent() {
   const [sortDesc, setSortDesc] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const autoScrolledToLastChapterRef = useRef(false);
+  const activeVolumeKeysRef = useRef(new Set<string>());
+  const isOnline = useOnlineStatus();
   const [searchQuery, setSearchQuery] = useState("");
   const [downloadedMap, setDownloadedMap] = useState<Record<string, boolean>>({});
   const [downloadingChapterMap, setDownloadingChapterMap] = useState<Record<string, boolean>>({});
@@ -207,6 +217,10 @@ function CatalogContent() {
       setDownloadMessage(`〈${ch.title}〉目前沒有可用章節連結，無法預下載。`);
       return;
     }
+    if (!isOnline) {
+      setDownloadMessage("目前沒有網路，無法下載新章節。已下載內容仍可離線閱讀。");
+      return;
+    }
     if (downloadingChapterMap[ch.url]) return;
     setDownloadingChapterMap(prev => ({ ...prev, [ch.url!]: true }));
     setChapterProgressMap(prev => ({ ...prev, [ch.url!]: 0 }));
@@ -231,30 +245,48 @@ function CatalogContent() {
       setDownloadMessage(`〈${group.volTitle || `第 ${volumeIndex + 1} 卷`}〉沒有可下載章節。`);
       return;
     }
+    if (!isOnline) {
+      setDownloadMessage("目前沒有網路，無法下載新卷。已下載內容仍可離線閱讀。");
+      return;
+    }
     const key = `${volumeIndex}:${group.volTitle}`;
-    if (downloadingVolumeMap[key]) return;
+    if (activeVolumeKeysRef.current.has(key)) return;
+    activeVolumeKeysRef.current.add(key);
     setDownloadingVolumeMap(prev => ({ ...prev, [key]: { completed: 0, total: urls.length } }));
     setDownloadingChapterMap(prev => ({ ...prev, ...Object.fromEntries(urls.map(url => [url, true])) }));
     setChapterProgressMap(prev => ({ ...prev, ...Object.fromEntries(urls.map(url => [url, downloadedMap[url] ? 100 : 0])) }));
-    setDownloadMessage(`正在排隊預下載 ${group.volTitle || `第 ${volumeIndex + 1} 卷`}…`);
+    setDownloadMessage(`${group.volTitle || `第 ${volumeIndex + 1} 卷`} 已加入整卷下載佇列。`);
     try {
-      const result = await downloadChaptersForOffline(urls, catalogUrl, {
-        concurrency: 4,
-        onChapterProgress: progress => {
-          setChapterProgressMap(prev => ({ ...prev, [progress.chapterUrl]: progress.percent }));
-        },
-        onProgress: progress => {
-          setDownloadingVolumeMap(prev => ({ ...prev, [key]: { completed: progress.completed, total: progress.total } }));
-          setDownloadingChapterMap(prev => { const next = { ...prev }; delete next[progress.chapterUrl]; return next; });
-          setDownloadMessage(`正在預下載 ${group.volTitle || `第 ${volumeIndex + 1} 卷`}：${progress.completed}/${progress.total} · ${progress.chapterTitle}`);
-          refreshDownloadedMap();
-        },
+      const result = await enqueueVolumeDownload(async () => {
+        setDownloadMessage(`開始預下載 ${group.volTitle || `第 ${volumeIndex + 1} 卷`}…`);
+        return downloadChaptersForOffline(urls, catalogUrl, {
+          concurrency: 4,
+          onChapterProgress: progress => {
+            setChapterProgressMap(prev => ({ ...prev, [progress.chapterUrl]: progress.percent }));
+          },
+          onProgress: progress => {
+            setDownloadingVolumeMap(prev => ({ ...prev, [key]: { completed: progress.completed, total: progress.total } }));
+            setDownloadingChapterMap(prev => { const next = { ...prev }; delete next[progress.chapterUrl]; return next; });
+            setChapterProgressMap(prev => ({ ...prev, [progress.chapterUrl]: 100 }));
+            setDownloadMessage(
+              progress.failed
+                ? `${group.volTitle || `第 ${volumeIndex + 1} 卷`}：第 ${progress.completed}/${progress.total} 章下載失敗，繼續處理其餘章節…`
+                : `正在預下載 ${group.volTitle || `第 ${volumeIndex + 1} 卷`}：${progress.completed}/${progress.total} · ${progress.chapterTitle}`,
+            );
+            refreshDownloadedMap();
+          },
+        });
       });
       refreshDownloadedMap();
-      setDownloadMessage(`${group.volTitle || `第 ${volumeIndex + 1} 卷`} 下載完成：新增 ${result.completed} 章，略過 ${result.skipped} 章，含圖片 / 動圖離線。`);
+      setDownloadMessage(
+        result.failed > 0
+          ? `${group.volTitle || `第 ${volumeIndex + 1} 卷`} 已處理完成：新增 ${result.completed} 章、略過 ${result.skipped} 章、失敗 ${result.failed} 章。失敗章節可重新下載。`
+          : `${group.volTitle || `第 ${volumeIndex + 1} 卷`} 下載完成：新增 ${result.completed} 章，略過 ${result.skipped} 章，含圖片 / 動圖離線。`,
+      );
     } catch (e) {
-      setDownloadMessage(`整卷下載失敗：${String(e)}`);
+      setDownloadMessage(`整卷下載發生非預期錯誤：${String(e)}`);
     } finally {
+      activeVolumeKeysRef.current.delete(key);
       setDownloadingVolumeMap(prev => { const next = { ...prev }; delete next[key]; return next; });
       setDownloadingChapterMap(prev => { const next = { ...prev }; for (const url of urls) delete next[url]; return next; });
       setChapterProgressMap(prev => { const next = { ...prev }; for (const url of urls) delete next[url]; return next; });
@@ -490,6 +522,7 @@ function CatalogContent() {
 
   const validLastChapterUrl = lastChapterUrl && lastChapterUrl !== "null" ? lastChapterUrl : "";
   const downloadedCount = downloadableChapterUrls.filter(url => downloadedMap[url]).length;
+  const canOpenLastChapter = !!validLastChapterUrl && canOpenOfflineResource(isOnline, !!downloadedMap[validLastChapterUrl]);
 
   // Search: flat list of {chapter, volTitle} matching query (chapter title OR volume title)
   const trimmedQuery = searchQuery.trim();
@@ -551,7 +584,9 @@ function CatalogContent() {
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
                 <button 
                   onClick={() => router.push(`/gallery?url=${encodeURIComponent(catalogUrl)}`)}
-                  style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 999, padding: "6px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}
+                  disabled={!isOnline}
+                  title={isOnline ? "全部插畫" : "插畫頁需要網路連線"}
+                  style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 999, padding: "6px 10px", fontSize: 11, cursor: isOnline ? "pointer" : "not-allowed", fontWeight: 600, opacity: isOnline ? 1 : 0.45 }}
                 >
                   <GalleryIcon style={{ fontSize: 13 }} /> 全部插畫
                 </button>
@@ -602,8 +637,15 @@ function CatalogContent() {
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
             {validLastChapterUrl && lastChapterTitle ? (
               <button
-                onClick={() => router.push(`/read?url=${encodeURIComponent(validLastChapterUrl)}&catalog=${encodeURIComponent(catalogUrl)}`)}
-                style={{ display: "flex", alignItems: "center", gap: 8, maxWidth: "100%", background: "rgba(200,169,110,.08)", border: "1px solid rgba(200,169,110,.22)", borderRadius: 999, padding: "8px 12px", cursor: "pointer", color: "var(--text)", minWidth: 0 }}
+                onClick={() => {
+                  if (!canOpenLastChapter) return;
+                  const href = `/read?url=${encodeURIComponent(validLastChapterUrl)}&catalog=${encodeURIComponent(catalogUrl)}`;
+                  if (isOnline) router.push(href);
+                  else window.location.assign(href);
+                }}
+                disabled={!canOpenLastChapter}
+                title={canOpenLastChapter ? `繼續閱讀：${lastChapterTitle}` : "此章尚未下載，離線時無法開啟"}
+                style={{ display: "flex", alignItems: "center", gap: 8, maxWidth: "100%", background: "rgba(200,169,110,.08)", border: "1px solid rgba(200,169,110,.22)", borderRadius: 999, padding: "8px 12px", cursor: canOpenLastChapter ? "pointer" : "not-allowed", color: "var(--text)", minWidth: 0, opacity: canOpenLastChapter ? 1 : 0.45 }}
               >
                 <span style={{ fontSize: 10, fontWeight: 800, background: "var(--accent)", color: "#0a0a0d", padding: "3px 8px", borderRadius: 999, whiteSpace: "nowrap" }}>上次看到</span>
                 <span style={{ fontSize: 13, color: "var(--accent)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lastChapterTitle}</span>
@@ -709,24 +751,26 @@ function CatalogContent() {
                 }
                 return (
                   <div key={chKey} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <Link
+                    <OfflineAwareLink
                       id={chapterAnchorId}
                       prefetch={false}
                       href={`/read?url=${encodeURIComponent(ch.url!)}&catalog=${encodeURIComponent(catalogUrl)}`}
-                      style={{ ...srStyle, flex: 1, minWidth: 0 }}
+                      isOnline={isOnline}
+                      hasCachedResource={isDownloaded}
+                      style={{ ...srStyle, flex: 1, minWidth: 0, opacity: canOpenOfflineResource(isOnline, isDownloaded) ? 1 : 0.45, cursor: canOpenOfflineResource(isOnline, isDownloaded) ? "pointer" : "not-allowed" }}
                       onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
                       onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
-                    >{srInner}</Link>
+                    >{srInner}</OfflineAwareLink>
                     <button
                       onClick={() => isDownloaded ? handleDeleteChapterDownload(ch) : handleChapterDownload(ch)}
-                      disabled={isDownloading}
+                      disabled={isDownloading || (!isOnline && !isDownloaded)}
                       aria-label={isDownloading ? `正在下載 ${ch.title}` : isDownloaded ? `刪除已下載章節 ${ch.title}` : `預下載章節 ${ch.title}`}
-                      title={isDownloading ? `下載中：${ch.title}` : isDownloaded ? `刪除：${ch.title}` : `預下載：${ch.title}`}
+                      title={isDownloading ? `下載中：${ch.title}` : isDownloaded ? `刪除：${ch.title}` : !isOnline ? "目前沒有網路，無法下載" : `預下載：${ch.title}`}
                       style={{
                         ...iconButtonBase,
                         color: isDownloaded ? "#ffb3b3" : "var(--accent)",
-                        cursor: isDownloading ? "progress" : "pointer",
-                        opacity: isDownloading ? 0.72 : 1,
+                        cursor: isDownloading ? "progress" : (!isOnline && !isDownloaded ? "not-allowed" : "pointer"),
+                        opacity: isDownloading ? 0.72 : (!isOnline && !isDownloaded ? 0.45 : 1),
                       }}
                     >
                       {isDownloading ? (
@@ -745,15 +789,18 @@ function CatalogContent() {
             {validLastChapterUrl && lastChapterTitle && !searchResults.some(r => r.ch.url === validLastChapterUrl) && (
               <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
                 <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 8 }}>上次閱讀位置</div>
-                <Link
+                <OfflineAwareLink
                   prefetch={false}
                   href={`/read?url=${encodeURIComponent(validLastChapterUrl)}&catalog=${encodeURIComponent(catalogUrl)}`}
+                  isOnline={isOnline}
+                  hasCachedResource={!!downloadedMap[validLastChapterUrl]}
                   style={{
                     display: "flex", alignItems: "center", gap: 8,
                     padding: "9px 8px", borderRadius: 7,
                     background: "rgba(200,169,110,.06)",
                     border: "1px solid rgba(200,169,110,.18)",
-                    cursor: "pointer", textDecoration: "none",
+                    cursor: canOpenOfflineResource(isOnline, !!downloadedMap[validLastChapterUrl]) ? "pointer" : "not-allowed", textDecoration: "none",
+                    opacity: canOpenOfflineResource(isOnline, !!downloadedMap[validLastChapterUrl]) ? 1 : 0.45,
                     transition: "background .12s",
                   }}
                   onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.background = "rgba(200,169,110,.12)"; }}
@@ -763,7 +810,7 @@ function CatalogContent() {
                   <span style={{ fontSize: 10, fontWeight: 700, background: "var(--accent)", color: "#0a0a0d", padding: "2px 7px", borderRadius: 3, whiteSpace: "nowrap", flexShrink: 0 }}>
                     上次看到
                   </span>
-                </Link>
+                </OfflineAwareLink>
               </div>
             )}
           </>
@@ -803,20 +850,20 @@ function CatalogContent() {
                   <>
                     <button
                       onClick={(e) => { e.stopPropagation(); handleVolumeDownload(group, originalGi); }}
-                      disabled={volumeDownloading || volumeDownloaded === volumeUrls.length}
-                      aria-label={volumeDownloading ? `${group.volTitle || "此卷"} 下載中` : volumeDownloaded === volumeUrls.length ? `${group.volTitle || "此卷"} 已下載完成` : `預下載 ${group.volTitle || "此卷"}`}
-                      title={volumeDownloading ? `下載中 ${volumeProgress?.completed ?? 0}/${volumeProgress?.total ?? volumeUrls.length}` : volumeDownloaded === volumeUrls.length ? "已下載完成" : "預下載本卷"}
+                      disabled={volumeDownloading || volumeDownloaded === volumeUrls.length || !isOnline}
+                      aria-label={volumeDownloading ? `${group.volTitle || "此卷"} ${volumeProgress?.completed === 0 ? "排隊中" : "下載中"}` : volumeDownloaded === volumeUrls.length ? `${group.volTitle || "此卷"} 已下載完成` : !isOnline ? `${group.volTitle || "此卷"} 離線時無法下載` : `預下載 ${group.volTitle || "此卷"}`}
+                      title={volumeDownloading ? (volumeProgress?.completed === 0 ? "已加入整卷下載佇列" : `下載中 ${volumeProgress?.completed ?? 0}/${volumeProgress?.total ?? volumeUrls.length}`) : volumeDownloaded === volumeUrls.length ? "已下載完成" : !isOnline ? "目前沒有網路，無法下載本卷" : "預下載本卷"}
                       style={{
                         ...iconButtonBase,
                         width: 34,
                         height: 34,
                         color: volumeDownloaded === volumeUrls.length ? "#84d29a" : "var(--accent)",
-                        cursor: volumeDownloading ? "progress" : (volumeDownloaded === volumeUrls.length ? "default" : "pointer"),
-                        opacity: volumeDownloading ? 0.72 : 1,
+                        cursor: volumeDownloading ? "progress" : (volumeDownloaded === volumeUrls.length ? "default" : !isOnline ? "not-allowed" : "pointer"),
+                        opacity: volumeDownloading ? 0.72 : (!isOnline && volumeDownloaded !== volumeUrls.length ? 0.45 : 1),
                       }}
                     >
                       {volumeDownloading ? (
-                        <CircularProgress value={volumePercent} size={34} label={`${group.volTitle || "此卷"} 下載中`} />
+                        <CircularProgress value={volumePercent} size={34} queued={volumeProgress?.completed === 0 && volumePercent === 0} label={volumeProgress?.completed === 0 ? `${group.volTitle || "此卷"} 排隊中` : `${group.volTitle || "此卷"} 下載中`} />
                       ) : volumeDownloaded === volumeUrls.length ? (
                         <CheckIcon style={{ fontSize: 16 }} />
                       ) : (
@@ -903,19 +950,21 @@ function CatalogContent() {
                        }
                        return (
                          <div key={chKey} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                           <Link
+                           <OfflineAwareLink
                              id={chapterAnchorId}
                              prefetch={false}
                              href={`/read?url=${encodeURIComponent(ch.url!)}&catalog=${encodeURIComponent(catalogUrl)}`}
-                             style={{ ...chStyle, flex: 1, minWidth: 0 }}
+                             isOnline={isOnline}
+                             hasCachedResource={isDownloaded}
+                             style={{ ...chStyle, flex: 1, minWidth: 0, opacity: canOpenOfflineResource(isOnline, isDownloaded) ? 1 : 0.45, cursor: canOpenOfflineResource(isOnline, isDownloaded) ? "pointer" : "not-allowed" }}
                              onMouseEnter={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface)"; }}
                              onMouseLeave={e => { if (!isLast) (e.currentTarget as HTMLAnchorElement).style.background = ""; }}
-                           >{inner}</Link>
+                           >{inner}</OfflineAwareLink>
                            <button
                              onClick={() => isDownloaded ? handleDeleteChapterDownload(ch) : handleChapterDownload(ch)}
-                             disabled={isDownloading}
+                             disabled={isDownloading || (!isOnline && !isDownloaded)}
                              aria-label={isDownloading ? `正在下載 ${ch.title}` : isDownloaded ? `刪除已下載章節 ${ch.title}` : `預下載章節 ${ch.title}`}
-                             title={isDownloading ? `下載中：${ch.title}` : isDownloaded ? `刪除：${ch.title}` : `預下載：${ch.title}`}
+                             title={isDownloading ? `下載中：${ch.title}` : isDownloaded ? `刪除：${ch.title}` : !isOnline ? "目前沒有網路，無法下載" : `預下載：${ch.title}`}
                              style={{
                                ...iconButtonBase,
                                color: isDownloaded ? "#ffb3b3" : "var(--accent)",

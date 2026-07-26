@@ -372,6 +372,15 @@ export function getChapterCache(chapterUrl: string): ChapterCache | null {
   }
 }
 
+export function getCachedChapterUrls(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    return new Set(Object.keys(loadChapterCacheMap()));
+  } catch {
+    return new Set();
+  }
+}
+
 export function saveChapterCache(chapterUrl: string, data: Omit<ChapterCache, "cachedAt">): void {
   if (typeof window === "undefined") return;
   try {

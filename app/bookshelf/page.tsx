@@ -1,7 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { loadBookshelf, BookshelfEntry, removeFromBookshelf } from "@/lib/history";
+import { loadBookshelf, getCatalogCache, BookshelfEntry, removeFromBookshelf } from "@/lib/history";
+import { canOpenOfflineResource } from "@/lib/offline-access";
+import { useOnlineStatus } from "@/lib/use-online-status";
 import { ImagePlaceholderIcon, CloseIcon } from "@/components/icons";
 import { triggerSyncPull } from "@/lib/sync";
 
@@ -14,6 +16,7 @@ interface BookshelfItem extends BookshelfEntry {
 export default function BookshelfPage() {
   const [items, setItems] = useState<BookshelfItem[]>([]);
   const router = useRouter();
+  const isOnline = useOnlineStatus();
 
   useEffect(() => {
     triggerSyncPull().then(() => {
@@ -62,7 +65,7 @@ export default function BookshelfPage() {
     <main style={{ minHeight: "100vh", padding: "40px 24px", maxWidth: 800, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 32 }}>
         <h1 style={{ fontSize: 24, fontWeight: 700, color: "var(--text)" }}>我的書架</h1>
-        <button onClick={() => router.push("/")} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 14 }}>
+        <button onClick={() => { if (isOnline) router.push("/"); else window.location.assign("/"); }} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 14 }}>
           返回首頁
         </button>
       </div>
@@ -73,11 +76,21 @@ export default function BookshelfPage() {
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 20 }}>
-          {items.map(item => (
-            <div 
+          {items.map(item => {
+            const canOpen = canOpenOfflineResource(isOnline, !!getCatalogCache(item.catalogUrl));
+            const openCatalog = () => {
+              if (!canOpen) return;
+              const href = `/catalog?url=${encodeURIComponent(item.catalogUrl)}`;
+              if (isOnline) router.push(href);
+              else window.location.assign(href);
+            };
+
+            return <div
               key={item.catalogUrl}
-              onClick={() => router.push(`/catalog?url=${encodeURIComponent(item.catalogUrl)}`)}
-              style={{ cursor: "pointer", position: "relative", display: "flex", flexDirection: "column", gap: 8 }}
+              onClick={openCatalog}
+              aria-disabled={!canOpen}
+              title={canOpen ? item.novelTitle : "此小說目錄尚未快取，離線時無法開啟"}
+              style={{ cursor: canOpen ? "pointer" : "not-allowed", opacity: canOpen ? 1 : 0.45, position: "relative", display: "flex", flexDirection: "column", gap: 8 }}
             >
               <div style={{ width: "100%", aspectRatio: "3/4", borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)", position: "relative" }}>
                 {item.coverUrl ? (
@@ -111,8 +124,8 @@ export default function BookshelfPage() {
                   {item.checking ? "檢查更新中..." : (item.hasUpdate ? `已更新至 ${item.newTotalChapters} 章` : `共 ${item.totalChapters} 章`)}
                 </div>
               </div>
-            </div>
-          ))}
+            </div>;
+          })}
         </div>
       )}
     </main>

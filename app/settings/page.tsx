@@ -1,6 +1,5 @@
 "use client";
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
 import { getAuthToken, setAuthToken, triggerSyncPull, triggerSyncPush, getUsernameFromToken } from "@/lib/sync";
 import { getHistory, getAllBookmarks, loadBookshelf, save, saveBookmarks, saveBookshelf } from "@/lib/history";
 import { AvatarUploader } from "@/components/AvatarUploader";
@@ -12,7 +11,6 @@ const fileToBase64 = (f: File): Promise<string> => new Promise((resolve) => {
 });
 
 export default function SettingsPage() {
-  const router = useRouter();
   const [token, setTokenState] = useState<string | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -160,7 +158,7 @@ export default function SettingsPage() {
     <main style={{ minHeight: "100vh", padding: "40px 24px", maxWidth: 600, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 32 }}>
         <h1 style={{ fontSize: 24, fontWeight: 700, color: "var(--text)" }}>設定</h1>
-        <button onClick={() => router.push("/")} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 14 }}>
+        <button onClick={() => window.location.assign("/")} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 14 }}>
           返回首頁
         </button>
       </div>
