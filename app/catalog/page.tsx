@@ -7,6 +7,7 @@ import { getVolumeProgressPercent } from "@/lib/download-progress";
 import { createRequestQueue } from "@/lib/download-queue";
 import { canOpenOfflineResource } from "@/lib/offline-access";
 import { useOnlineStatus } from "@/lib/use-online-status";
+import { cacheOfflineRoute } from "@/lib/offline-route-cache";
 import { ImagePlaceholderIcon, GalleryIcon, DownloadIcon, CheckIcon, TrashIcon } from "@/components/icons";
 import { OfflineAwareLink } from "@/components/OfflineAwareLink";
 import { CommentBoard } from "@/components/CommentBoard";
@@ -344,6 +345,7 @@ function CatalogContent() {
 
     // Persist catalog structure for cache-first next visit (include metadata for history enrichment)
     saveCatalogCache(catUrl, { title: parsed.title, coverUrl: cover, author: resolvedAuthor, desc: resolvedDesc, tags: resolvedTags, groups: repaired.groups });
+    void cacheOfflineRoute(`/catalog?url=${encodeURIComponent(catUrl)}`);
 
     const flat = repaired.groups.flatMap(g => g.chapters);
     const ex = getEntryFor(catUrl);

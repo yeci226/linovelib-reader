@@ -3,32 +3,51 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const serviceWorkerSource = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
+const swSource = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
 
-test("service worker falls back navigation URLs with query strings by pathname", async () => {
+type SWOptions = {
+  cacheMatch?: (request: unknown) => unknown;
+  fetchImpl?: (request: unknown) => Promise<unknown>;
+};
+
+function loadServiceWorker(options: SWOptions = {}) {
   const listeners: Record<string, (event: any) => void> = {};
-  const readShell = { source: "cached-read-shell" };
-
+  const fetchCalls: string[] = [];
+  const putCalls: string[] = [];
+  const cache = {
+    addAll: async () => undefined,
+    match: async () => null,
+    put: async (request: unknown) => {
+      putCalls.push(String(request));
+    },
+    keys: async () => [],
+    delete: async () => true,
+  };
+  const defaultFetch = async (request: unknown) => {
+    const url = String(request);
+    fetchCalls.push(url);
+    const isDocument = ["/", "/catalog", "/read", "/bookshelf", "/settings"].includes(url);
+    const body = isDocument
+      ? '<html><head><link rel="stylesheet" href="/_next/static/app.css"></head><body><script src="/_next/static/app.js"></script></body></html>'
+      : "asset";
+    const response = {
+      ok: true,
+      headers: { get: (name: string) => name.toLowerCase() === "content-type" ? (isDocument ? "text/html" : "application/javascript") : null },
+      clone() { return this; },
+      text: async () => body,
+    };
+    return response;
+  };
   const sandbox = {
     URL,
     Promise,
     setTimeout,
     clearTimeout,
-    fetch: async () => {
-      throw new Error("offline");
-    },
-    Response: {
-      error: () => ({ source: "response-error" }),
-    },
+    fetch: options.fetchImpl ?? defaultFetch,
+    Response: { error: () => ({ source: "response-error" }) },
     caches: {
-      match: async (request: string) => request === "/read" ? readShell : null,
-      open: async () => ({
-        addAll: async () => undefined,
-        match: async () => null,
-        put: async () => undefined,
-        keys: async () => [],
-        delete: async () => true,
-      }),
+      match: async (request: unknown) => options.cacheMatch?.(request) ?? null,
+      open: async () => cache,
       keys: async () => [],
       delete: async () => true,
     },
@@ -41,21 +60,58 @@ test("service worker falls back navigation URLs with query strings by pathname",
       },
     },
   };
+  vm.runInNewContext(swSource, sandbox);
+  return { listeners, fetchCalls, putCalls };
+}
 
-  vm.runInNewContext(serviceWorkerSource, sandbox);
+function navigationRequest() {
+  return {
+    method: "GET",
+    mode: "navigate",
+    url: "https://reader.example/read?url=https%3A%2F%2Fexample.com%2Fchapter-1",
+  };
+}
 
+async function dispatchNavigation(
+  listener: (event: any) => void,
+  request: ReturnType<typeof navigationRequest>,
+) {
   let responsePromise: Promise<unknown> | undefined;
-  listeners.fetch({
-    request: {
-      method: "GET",
-      mode: "navigate",
-      url: "https://reader.example/read?url=https%3A%2F%2Fexample.com%2Fchapter-1",
-    },
+  listener({
+    request,
     respondWith: (response: Promise<unknown>) => {
       responsePromise = Promise.resolve(response);
     },
   });
-
   assert.ok(responsePromise, "navigation request should be intercepted");
-  assert.equal(await responsePromise, readShell);
+  return responsePromise;
+}
+
+test("service worker falls back navigation URLs with query strings by pathname", async () => {
+  const readShell = { source: "cached-read-shell" };
+  const { listeners } = loadServiceWorker({
+    fetchImpl: async () => { throw new Error("offline"); },
+    cacheMatch: request => request === "/read" ? readShell : null,
+  });
+  assert.equal(await dispatchNavigation(listeners.fetch, navigationRequest()), readShell);
+});
+
+test("service worker uses an exact cached offline route before the generic shell", async () => {
+  const request = navigationRequest();
+  const exactRoute = { source: "exact-downloaded-route" };
+  const { listeners } = loadServiceWorker({
+    fetchImpl: async () => { throw new Error("offline"); },
+    cacheMatch: candidate => candidate === request ? exactRoute : null,
+  });
+  assert.equal(await dispatchNavigation(listeners.fetch, request), exactRoute);
+});
+
+test("service worker install precaches scripts and styles required by app shells", async () => {
+  const { listeners, fetchCalls } = loadServiceWorker();
+  let installPromise: Promise<unknown> | undefined;
+  listeners.install({ waitUntil: (promise: Promise<unknown>) => { installPromise = Promise.resolve(promise); } });
+  assert.ok(installPromise, "install work should be registered");
+  await installPromise;
+  assert.ok(fetchCalls.includes("/_next/static/app.js"), "app JavaScript should be precached");
+  assert.ok(fetchCalls.includes("/_next/static/app.css"), "app styles should be precached");
 });

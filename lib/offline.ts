@@ -5,6 +5,7 @@ import { saveChapterCache, getChapterCache, type ContentNode } from "./history";
 import { restoreChars } from "./linovelib-charmap";
 import { getChapterProgressPercent, type ChapterProgressInput } from "./download-progress";
 import { createRequestQueue, mapWithConcurrencySettled, retryAfterMs } from "./download-queue";
+import { cacheOfflineRoute } from "./offline-route-cache";
 
 type ChapterPageApiResult = {
   title: string;
@@ -153,8 +154,12 @@ export async function downloadChapterForOffline(
   const report = (chapterTitle: string, progress: ChapterProgressInput) => {
     onProgress?.({ ...progress, chapterUrl, chapterTitle, percent: getChapterProgressPercent(progress) });
   };
+  const readHref = `/read?url=${encodeURIComponent(chapterUrl)}&catalog=${encodeURIComponent(catalogUrl)}`;
   const cached = getChapterCache(chapterUrl);
   if (cached) {
+    if (!await cacheOfflineRoute(readHref)) {
+      throw new Error("離線閱讀頁快取失敗，請保持連線後重試");
+    }
     report(cached.title, { phase: "complete", completed: 1, total: 1 });
     return { title: cached.title, alreadyDownloaded: true };
   }
@@ -192,6 +197,10 @@ export async function downloadChapterForOffline(
     prevChapterUrl: firstPage.prevChapterUrl,
     pinned: true,
   });
+
+  if (!await cacheOfflineRoute(readHref)) {
+    throw new Error("離線閱讀頁快取失敗，請保持連線後重試");
+  }
 
   report(chapterTitle, { phase: "complete", completed: 1, total: 1 });
   return { title: chapterTitle, alreadyDownloaded: false };
