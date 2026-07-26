@@ -3,6 +3,8 @@
 import { parseChapterHtml } from "./chapter-parser";
 import { saveChapterCache, getChapterCache, type ContentNode } from "./history";
 import { restoreChars } from "./linovelib-charmap";
+import { getChapterProgressPercent, type ChapterProgressInput } from "./download-progress";
+import { createRequestQueue, retryAfterMs } from "./download-queue";
 
 type ChapterPageApiResult = {
   title: string;
@@ -20,13 +22,38 @@ export type OfflineDownloadProgress = {
   chapterTitle: string;
 };
 
+export type OfflineChapterProgress = ChapterProgressInput & {
+  chapterUrl: string;
+  chapterTitle: string;
+  percent: number;
+};
+
 type DownloadBatchOptions = {
   concurrency?: number;
   onProgress?: (progress: OfflineDownloadProgress) => void;
+  onChapterProgress?: (progress: OfflineChapterProgress) => void;
 };
 
+const enqueueChapterRequest = createRequestQueue(350);
+const enqueueMediaRequest = createRequestQueue(200);
+
+async function fetchWithRateLimitRetry(url: string, enqueue: ReturnType<typeof createRequestQueue>): Promise<Response> {
+  return enqueue(async () => {
+    for (let attempt = 0; ; attempt += 1) {
+      const res = await fetch(url);
+      if (res.status !== 429 || attempt >= 3) return res;
+      await res.body?.cancel().catch(() => undefined);
+      const waitMs = retryAfterMs(res.headers.get("retry-after"), 1000 * 2 ** attempt);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
+  });
+}
+
 async function fetchChapterPage(url: string, catalogUrl: string): Promise<ChapterPageApiResult> {
-  const res = await fetch(`/api/chapter?url=${encodeURIComponent(url)}&catalogUrl=${encodeURIComponent(catalogUrl)}`);
+  const res = await fetchWithRateLimitRetry(
+    `/api/chapter?url=${encodeURIComponent(url)}&catalogUrl=${encodeURIComponent(catalogUrl)}`,
+    enqueueChapterRequest,
+  );
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`HTTP ${res.status}: ${text}`);
@@ -63,7 +90,7 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
 }
 
 async function fetchMediaAsDataUrl(url: string): Promise<string> {
-  const res = await fetch(`/api/image?url=${encodeURIComponent(url)}`);
+  const res = await fetchWithRateLimitRetry(`/api/image?url=${encodeURIComponent(url)}`, enqueueMediaRequest);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`Image HTTP ${res.status}: ${text}`);
@@ -90,13 +117,18 @@ async function mapWithConcurrency<T>(
   );
 }
 
-async function embedOfflineMedia(nodes: ContentNode[]): Promise<ContentNode[]> {
+async function embedOfflineMedia(
+  nodes: ContentNode[],
+  onProgress?: (completed: number, total: number) => void,
+): Promise<ContentNode[]> {
   const nextNodes = [...nodes];
   const imageIndexes = nextNodes
     .map((node, index) => ({ node, index }))
     .filter((entry): entry is { node: Extract<ContentNode, { type: "image" }>; index: number } => entry.node.type === "image" && /^https?:\/\//.test(entry.node.src));
 
   const cache = new Map<string, string>();
+  let completed = 0;
+  onProgress?.(0, imageIndexes.length);
 
   // ponytail: keep media embedding concurrency low to avoid hammering the image proxy and blowing browser memory; raise if users need faster bulk art caching.
   await mapWithConcurrency(imageIndexes, 3, async ({ node, index }) => {
@@ -104,21 +136,34 @@ async function embedOfflineMedia(nodes: ContentNode[]): Promise<ContentNode[]> {
       cache.set(node.src, await fetchMediaAsDataUrl(node.src));
     }
     nextNodes[index] = { ...node, src: cache.get(node.src)! };
+    completed += 1;
+    onProgress?.(completed, imageIndexes.length);
   });
 
   return nextNodes;
 }
 
-export async function downloadChapterForOffline(chapterUrl: string, catalogUrl: string): Promise<{ title: string; alreadyDownloaded: boolean }> {
+export async function downloadChapterForOffline(
+  chapterUrl: string,
+  catalogUrl: string,
+  onProgress?: (progress: OfflineChapterProgress) => void,
+): Promise<{ title: string; alreadyDownloaded: boolean }> {
+  const report = (chapterTitle: string, progress: ChapterProgressInput) => {
+    onProgress?.({ ...progress, chapterUrl, chapterTitle, percent: getChapterProgressPercent(progress) });
+  };
   const cached = getChapterCache(chapterUrl);
   if (cached) {
+    report(cached.title, { phase: "complete", completed: 1, total: 1 });
     return { title: cached.title, alreadyDownloaded: true };
   }
 
+  report("正在取得章節", { phase: "fetching", completed: 0, total: null });
   const firstPage = await fetchChapterPage(chapterUrl, catalogUrl);
   firstPage.content = restoreChars(firstPage.content || "");
   let allNodes = [...contentToNodes(firstPage.content)];
   const chapterTitle = firstPage.title || "未命名章節";
+  let fetchedPages = 1;
+  report(chapterTitle, { phase: "fetching", completed: fetchedPages, total: null });
 
   let nextPage = firstPage.nextPageUrl;
   let lastPage = firstPage;
@@ -128,10 +173,15 @@ export async function downloadChapterForOffline(chapterUrl: string, catalogUrl: 
     allNodes.push(...contentToNodes(pageData.content));
     lastPage = pageData;
     nextPage = pageData.nextPageUrl;
+    fetchedPages += 1;
+    report(chapterTitle, { phase: "fetching", completed: fetchedPages, total: null });
   }
 
-  allNodes = await embedOfflineMedia(allNodes);
+  allNodes = await embedOfflineMedia(allNodes, (completed, total) => {
+    report(chapterTitle, { phase: "media", completed, total });
+  });
 
+  report(chapterTitle, { phase: "saving", completed: 0, total: 0 });
   saveChapterCache(chapterUrl, {
     title: chapterTitle,
     subtitle: "",
@@ -141,6 +191,7 @@ export async function downloadChapterForOffline(chapterUrl: string, catalogUrl: 
     pinned: true,
   });
 
+  report(chapterTitle, { phase: "complete", completed: 1, total: 1 });
   return { title: chapterTitle, alreadyDownloaded: false };
 }
 
@@ -155,7 +206,7 @@ export async function downloadChaptersForOffline(
   const concurrency = Math.max(1, options?.concurrency ?? 4);
 
   await mapWithConcurrency(normalized, concurrency, async chapterUrl => {
-    const result = await downloadChapterForOffline(chapterUrl, catalogUrl);
+    const result = await downloadChapterForOffline(chapterUrl, catalogUrl, options?.onChapterProgress);
     if (result.alreadyDownloaded) {
       skipped += 1;
     } else {

@@ -4,6 +4,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { getEntryFor, saveProgress, getCatalogCache, saveCatalogCache, getChapterCache, removeChapterCache, removeChapterCaches, type HistoryEntry } from "@/lib/history";
 import { downloadChapterForOffline, downloadChaptersForOffline } from "@/lib/offline";
+import { getVolumeProgressPercent } from "@/lib/download-progress";
 import { ImagePlaceholderIcon, GalleryIcon, DownloadIcon, CheckIcon, TrashIcon } from "@/components/icons";
 import { CommentBoard } from "@/components/CommentBoard";
 
@@ -22,6 +23,33 @@ async function fetchCatalog(url: string): Promise<{ title: string; coverUrl: str
   }
   const data = await res.json() as { title: string; coverUrl: string; volumes: VolumeGroup[]; author?: string; desc?: string; tags?: string[] };
   return { title: data.title, coverUrl: data.coverUrl, groups: data.volumes, author: data.author, desc: data.desc, tags: data.tags };
+}
+
+function CircularProgress({ value, size = 34, label, queued = false }: { value: number; size?: number; label: string; queued?: boolean }) {
+  const percent = Math.min(100, Math.max(0, Math.round(value)));
+  return (
+    <span
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={percent}
+      title={`${label}：${percent}%`}
+      style={{
+        width: size,
+        height: size,
+        borderRadius: 999,
+        display: "inline-grid",
+        placeItems: "center",
+        flexShrink: 0,
+        background: `conic-gradient(var(--accent) ${percent * 3.6}deg, var(--border) 0deg)`,
+      }}
+    >
+      <span style={{ width: size - 7, height: size - 7, borderRadius: 999, display: "grid", placeItems: "center", background: "var(--surface)", color: "var(--text)", fontSize: size <= 34 ? 8 : 9, fontWeight: 800 }}>
+        {queued ? "排" : `${percent}%`}
+      </span>
+    </span>
+  );
 }
 
 function CatalogContent() {
@@ -45,6 +73,7 @@ function CatalogContent() {
   const [searchQuery, setSearchQuery] = useState("");
   const [downloadedMap, setDownloadedMap] = useState<Record<string, boolean>>({});
   const [downloadingChapterMap, setDownloadingChapterMap] = useState<Record<string, boolean>>({});
+  const [chapterProgressMap, setChapterProgressMap] = useState<Record<string, number>>({});
   const [downloadingVolumeMap, setDownloadingVolumeMap] = useState<Record<string, { completed: number; total: number }>>({});
   const [downloadMessage, setDownloadMessage] = useState("");
   const [isMobile, setIsMobile] = useState(false);
@@ -180,15 +209,19 @@ function CatalogContent() {
     }
     if (downloadingChapterMap[ch.url]) return;
     setDownloadingChapterMap(prev => ({ ...prev, [ch.url!]: true }));
+    setChapterProgressMap(prev => ({ ...prev, [ch.url!]: 0 }));
     setDownloadMessage(`正在預下載：${ch.title}`);
     try {
-      const result = await downloadChapterForOffline(ch.url, catalogUrl);
+      const result = await downloadChapterForOffline(ch.url, catalogUrl, progress => {
+        setChapterProgressMap(prev => ({ ...prev, [progress.chapterUrl]: progress.percent }));
+      });
       refreshDownloadedMap();
       setDownloadMessage(result.alreadyDownloaded ? `已下載：${result.title}` : `下載完成：${result.title}（含圖片 / 動圖）`);
     } catch (e) {
       setDownloadMessage(`下載失敗：${String(e)}`);
     } finally {
       setDownloadingChapterMap(prev => { const next = { ...prev }; delete next[ch.url!]; return next; });
+      setChapterProgressMap(prev => { const next = { ...prev }; delete next[ch.url!]; return next; });
     }
   }
 
@@ -202,10 +235,14 @@ function CatalogContent() {
     if (downloadingVolumeMap[key]) return;
     setDownloadingVolumeMap(prev => ({ ...prev, [key]: { completed: 0, total: urls.length } }));
     setDownloadingChapterMap(prev => ({ ...prev, ...Object.fromEntries(urls.map(url => [url, true])) }));
-    setDownloadMessage(`正在預下載 ${group.volTitle || `第 ${volumeIndex + 1} 卷`}…`);
+    setChapterProgressMap(prev => ({ ...prev, ...Object.fromEntries(urls.map(url => [url, downloadedMap[url] ? 100 : 0])) }));
+    setDownloadMessage(`正在排隊預下載 ${group.volTitle || `第 ${volumeIndex + 1} 卷`}…`);
     try {
       const result = await downloadChaptersForOffline(urls, catalogUrl, {
         concurrency: 4,
+        onChapterProgress: progress => {
+          setChapterProgressMap(prev => ({ ...prev, [progress.chapterUrl]: progress.percent }));
+        },
         onProgress: progress => {
           setDownloadingVolumeMap(prev => ({ ...prev, [key]: { completed: progress.completed, total: progress.total } }));
           setDownloadingChapterMap(prev => { const next = { ...prev }; delete next[progress.chapterUrl]; return next; });
@@ -220,6 +257,7 @@ function CatalogContent() {
     } finally {
       setDownloadingVolumeMap(prev => { const next = { ...prev }; delete next[key]; return next; });
       setDownloadingChapterMap(prev => { const next = { ...prev }; for (const url of urls) delete next[url]; return next; });
+      setChapterProgressMap(prev => { const next = { ...prev }; for (const url of urls) delete next[url]; return next; });
     }
   }
 
@@ -621,6 +659,7 @@ function CatalogContent() {
                 const isVisited = !!ch.url && !!visitedChapters[ch.url];
                 const isDownloaded = !!ch.url && !!downloadedMap[ch.url];
                 const isDownloading = !!ch.url && !!downloadingChapterMap[ch.url];
+                const chapterProgress = ch.url ? chapterProgressMap[ch.url] ?? 0 : 0;
                 const volLabel = volMatch
                   ? <span style={{ fontSize: 10, color: "var(--text-dim)", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 6px", whiteSpace: "nowrap", flexShrink: 0, marginRight: isLast ? 6 : 0 }}>
                       {highlightMatch(volTitle || "章節列表", trimmedQuery)}
@@ -691,7 +730,7 @@ function CatalogContent() {
                       }}
                     >
                       {isDownloading ? (
-                        <DownloadIcon style={{ fontSize: 15, animation: "spin 1s linear infinite" }} />
+                        <CircularProgress value={chapterProgress} size={32} queued={chapterProgress === 0} label={chapterProgress === 0 ? `${ch.title} 排隊中` : `${ch.title} 下載中`} />
                       ) : isDownloaded ? (
                         <TrashIcon style={{ fontSize: 15 }} />
                       ) : (
@@ -738,6 +777,7 @@ function CatalogContent() {
           const volumeKey = `${originalGi}:${group.volTitle}`;
           const volumeProgress = downloadingVolumeMap[volumeKey];
           const volumeDownloading = !!volumeProgress;
+          const volumePercent = getVolumeProgressPercent(volumeUrls, chapterProgressMap);
 
           return (
             <div key={originalGi} style={{ marginBottom: 18, border: "1px solid var(--border)", borderRadius: 18, background: "linear-gradient(180deg, color-mix(in srgb, var(--surface2) 88%, transparent), color-mix(in srgb, var(--surface) 90%, transparent))", overflow: "hidden", boxShadow: "0 6px 18px rgba(0,0,0,.08)" }}>
@@ -776,7 +816,7 @@ function CatalogContent() {
                       }}
                     >
                       {volumeDownloading ? (
-                        <DownloadIcon style={{ fontSize: 16, animation: "spin 1s linear infinite" }} />
+                        <CircularProgress value={volumePercent} size={34} label={`${group.volTitle || "此卷"} 下載中`} />
                       ) : volumeDownloaded === volumeUrls.length ? (
                         <CheckIcon style={{ fontSize: 16 }} />
                       ) : (
@@ -821,6 +861,7 @@ function CatalogContent() {
                        const isVisited = !!ch.url && !!visitedChapters[ch.url];
                        const isDownloaded = !!ch.url && !!downloadedMap[ch.url];
                        const isDownloading = !!ch.url && !!downloadingChapterMap[ch.url];
+                       const chapterProgress = ch.url ? chapterProgressMap[ch.url] ?? 0 : 0;
                        const chKey = `vol-${originalGi}-${sourceChapterIndex}-${ch.title}-${ch.url || "missing"}`;
                        const chapterAnchorId = `ch-vol-${originalGi}-${sourceChapterIndex}`;
                        const chStyle: React.CSSProperties = {
@@ -883,7 +924,7 @@ function CatalogContent() {
                              }}
                            >
                              {isDownloading ? (
-                               <DownloadIcon style={{ fontSize: 15, animation: "spin 1s linear infinite" }} />
+                               <CircularProgress value={chapterProgress} size={32} queued={chapterProgress === 0} label={chapterProgress === 0 ? `${ch.title} 排隊中` : `${ch.title} 下載中`} />
                              ) : isDownloaded ? (
                                <TrashIcon style={{ fontSize: 15 }} />
                              ) : (
