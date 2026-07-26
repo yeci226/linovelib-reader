@@ -2,7 +2,11 @@ import { getHistory, getAllBookmarks, loadBookshelf, loadSettings, save, saveBoo
 
 export function getAuthToken(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("linovelib-token");
+  try {
+    return localStorage.getItem("linovelib-token");
+  } catch {
+    return null;
+  }
 }
 
 export function getUsernameFromToken(t: string | null): string {
@@ -21,8 +25,12 @@ export function getUsernameFromToken(t: string | null): string {
 
 export function setAuthToken(token: string | null) {
   if (typeof window === "undefined") return;
-  if (token) localStorage.setItem("linovelib-token", token);
-  else localStorage.removeItem("linovelib-token");
+  try {
+    if (token) localStorage.setItem("linovelib-token", token);
+    else localStorage.removeItem("linovelib-token");
+  } catch {
+    // Authentication remains signed out when browser storage is denied.
+  }
 }
 
 let syncTimeout: any = null;

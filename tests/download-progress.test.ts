@@ -3,7 +3,7 @@ import test from "node:test";
 
 // Node's built-in type-stripping test runner requires the explicit .ts extension.
 // @ts-expect-error TS5097 is expected for this runtime-only dynamic import.
-const { getChapterProgressPercent, getVolumeProgressPercent } = await import("../lib/download-progress.ts");
+const { adjustActiveDownloadCounts, getChapterProgressPercent, getVolumeProgressPercent } = await import("../lib/download-progress.ts");
 type ChapterProgressInput = Parameters<typeof getChapterProgressPercent>[0];
 
 test("chapter progress advances through page, media, saving, and completion stages", () => {
@@ -33,4 +33,15 @@ test("volume progress averages all concurrent chapter percentages", () => {
   const progressByUrl = { "chapter-a": 100, "chapter-b": 70, "chapter-c": 30, "chapter-d": 0 };
   assert.equal(getVolumeProgressPercent(urls, progressByUrl), 50);
   assert.equal(getVolumeProgressPercent([], progressByUrl), 0);
+});
+
+test("overlapping download jobs keep a chapter active until every owner finishes", () => {
+  let counts = new Map<string, number>();
+  counts = adjustActiveDownloadCounts(counts, ["a", "b"], 1);
+  counts = adjustActiveDownloadCounts(counts, ["a"], 1);
+  counts = adjustActiveDownloadCounts(counts, ["a", "b"], -1);
+  assert.equal(counts.get("a"), 1);
+  assert.equal(counts.has("b"), false);
+  counts = adjustActiveDownloadCounts(counts, ["a"], -1);
+  assert.equal(counts.has("a"), false);
 });

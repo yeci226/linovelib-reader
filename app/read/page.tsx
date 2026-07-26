@@ -14,6 +14,7 @@ import {
   getBookmarksForChapter,
   removeBookmark,
   getChapterCache,
+  loadChapterCache,
   getCachedChapterUrls,
   saveChapterCache,
   Bookmark,
@@ -78,7 +79,7 @@ async function prefetchNextChapter(url: string, catalogUrl: string): Promise<voi
     prefetchStore.set(url, result);
     // Single-page chapters can be saved to full chapter cache immediately
     if (!result.nextPageUrl) {
-      saveChapterCache(url, {
+      await saveChapterCache(url, {
         title: result.title,
         subtitle: "",
         nodes: contentToNodes(result.content),
@@ -180,6 +181,22 @@ const FONT_MAP: Record<FontFamily, string> = {
 
 const LINE_HEIGHTS = [1.7, 1.95, 2.4] as const;
 
+function readLocalSetting(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalSetting(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Reader content must remain usable when browser storage is denied.
+  }
+}
+
 function ReadContent() {
   const params = useSearchParams();
   const router = useRouter();
@@ -190,17 +207,17 @@ function ReadContent() {
 
   const READ_WIDTHS = [660, 800, 960, 1200] as const;
 
-  // Read chapter cache synchronously — this component is fully client-side.
+  // Metadata is synchronous; the large chapter body is loaded from Cache Storage.
   const initialCache = chapterUrl ? getChapterCache(chapterUrl) : null;
 
   const [title, setTitle] = useState(initialCache?.title ?? "");
   const [subtitle, setSubtitle] = useState(initialCache?.subtitle ?? "");
-  const [nodes, setNodes] = useState<ContentNode[]>(initialCache?.nodes ?? []);
-  const [loading, setLoading] = useState(!initialCache);
+  const [nodes, setNodes] = useState<ContentNode[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [readWidthIdx, setReadWidthIdx] = useState<number>(() => {
     if (typeof window === "undefined") return 0;
-    const v = parseInt(localStorage.getItem("linovelib-width-idx") ?? "0", 10);
+    const v = parseInt(readLocalSetting("linovelib-width-idx") ?? "0", 10);
     return isNaN(v) ? 0 : Math.min(v, READ_WIDTHS.length - 1);
   });
   const readWidth = READ_WIDTHS[readWidthIdx];
@@ -230,7 +247,7 @@ function ReadContent() {
   // Font family
   const [fontFamily, setFontFamily] = useState<FontFamily>(() => {
     if (typeof window === "undefined") return "sans";
-    return (localStorage.getItem("linovelib-font") as FontFamily) ?? "sans";
+    return (readLocalSetting("linovelib-font") as FontFamily) ?? "sans";
   });
 
   // Line height
@@ -312,12 +329,12 @@ function ReadContent() {
 
   // Persist font family
   useEffect(() => {
-    localStorage.setItem("linovelib-font", fontFamily);
+    writeLocalSetting("linovelib-font", fontFamily);
   }, [fontFamily]);
 
   // Persist read width
   useEffect(() => {
-    localStorage.setItem("linovelib-width-idx", String(readWidthIdx));
+    writeLocalSetting("linovelib-width-idx", String(readWidthIdx));
   }, [readWidthIdx]);
 
   // Load bookmarks when chapterUrl changes
@@ -386,7 +403,7 @@ function ReadContent() {
     
     // Scrolled past 20%, let's report chapter to backend
     reportedWordsRef.current.add(chapterUrl);
-    const token = localStorage.getItem("linovelib-token");
+    const token = readLocalSetting("linovelib-token");
     if (token) {
       fetch("/api/sync/words", {
         method: "POST",
@@ -459,30 +476,22 @@ function ReadContent() {
     
     let cancelled = false;
 
-    // Check cache first — may already be shown from synchronous init
-    const cached = getChapterCache(chapterUrl);
+    // The synchronous record is metadata only for the new Cache Storage format.
+    const cachedMetadata = getChapterCache(chapterUrl);
 
-    if (!cached && !navigator.onLine) {
-      setNodes([]);
-      setError("此章尚未下載，請連上網路後再開啟");
-      setLoading(false);
-      setLoadingMore(false);
-      return;
-    }
-
-    if (!cached) {
+    if (!cachedMetadata) {
       setLoading(true);
     }
     setLoadingMore(false);
     loadingChapterRef.current = chapterUrl;
-    if (!cached) setNodes([]);
-    setSubtitle(cached?.subtitle ?? "");
+    setNodes([]);
+    setSubtitle(cachedMetadata?.subtitle ?? "");
     setError("");
-    setNextUrl(cached ? cached.nextChapterUrl : null);
+    setNextUrl(cachedMetadata?.nextChapterUrl ?? null);
     setPrevUrl(null);
-    setNextTitle(cached?.nextChapterUrl ? resolveChapterTitle(catalogUrl, cached.nextChapterUrl) : "");
+    setNextTitle(cachedMetadata?.nextChapterUrl ? resolveChapterTitle(catalogUrl, cachedMetadata.nextChapterUrl) : "");
     setPrevTitle("");
-    setPageCount(cached ? 1 : 0);
+    setPageCount(cachedMetadata ? 1 : 0);
     window.scrollTo(0, 0);
     // Determine if we should show jump prompt
     let scrollPos = getChapterScroll(chapterUrl);
@@ -498,8 +507,9 @@ function ReadContent() {
     }
 
     async function loadInitial() {
+      const cached = await loadChapterCache(chapterUrl);
+      if (cancelled) return;
       if (cached) {
-        if (cancelled) return;
         setTitle(cached.title);
         setSubtitle(cached.subtitle);
         document.title = `${cached.title} — 輕小說閱讀器`;
@@ -532,6 +542,14 @@ function ReadContent() {
           });
           markChapterVisited(catalogUrl, chapterUrl, cached.title);
         }
+        return;
+      }
+
+      if (!navigator.onLine) {
+        setNodes([]);
+        setError("此章尚未下載，請連上網路後再開啟");
+        setLoading(false);
+        setLoadingMore(false);
         return;
       }
 
@@ -579,13 +597,19 @@ function ReadContent() {
         // Single-page chapter
         setNextUrl(data.nextChapterUrl);
         setNextTitle(data.nextChapterUrl ? resolveChapterTitle(catalogUrl, data.nextChapterUrl) : "");
-        saveChapterCache(chapterUrl, {
-          title: chTitle,
-          subtitle: "",
-          nodes: firstNodes,
-          nextChapterUrl: data.nextChapterUrl,
-          prevChapterUrl: data.prevChapterUrl,
-        });
+        try {
+          await saveChapterCache(chapterUrl, {
+            title: chTitle,
+            subtitle: "",
+            nodes: firstNodes,
+            nextChapterUrl: data.nextChapterUrl,
+            prevChapterUrl: data.prevChapterUrl,
+          });
+        } catch (cacheError) {
+          // Ordinary online reading must stay usable even when best-effort
+          // persistence is unavailable. Explicit downloads still reject.
+          console.warn("[read] automatic chapter cache failed:", cacheError);
+        }
         if (data.nextChapterUrl) {
           prefetchNextChapter(data.nextChapterUrl, catalogUrl);
         }
@@ -616,7 +640,7 @@ function ReadContent() {
             // Last sub-page reached
             setNextUrl(pageData.nextChapterUrl);
             setNextTitle(pageData.nextChapterUrl ? resolveChapterTitle(catalogUrl, pageData.nextChapterUrl) : "");
-            saveChapterCache(chapterUrl, {
+            await saveChapterCache(chapterUrl, {
               title: chTitle,
               subtitle: "",
               nodes: allNodes,

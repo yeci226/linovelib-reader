@@ -31,3 +31,17 @@ export function getVolumeProgressPercent(chapterUrls: string[], progressByUrl: R
   if (chapterUrls.length === 0) return 0;
   return Math.round(chapterUrls.reduce((sum, url) => sum + clamp(progressByUrl[url] ?? 0, 0, 100), 0) / chapterUrls.length);
 }
+
+export function adjustActiveDownloadCounts(
+  current: ReadonlyMap<string, number>,
+  chapterUrls: string[],
+  delta: 1 | -1,
+): Map<string, number> {
+  const next = new Map(current);
+  for (const chapterUrl of new Set(chapterUrls.filter(Boolean))) {
+    const count = (next.get(chapterUrl) ?? 0) + delta;
+    if (count > 0) next.set(chapterUrl, count);
+    else next.delete(chapterUrl);
+  }
+  return next;
+}

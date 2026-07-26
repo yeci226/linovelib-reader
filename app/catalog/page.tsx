@@ -1,9 +1,9 @@
 "use client";
 import { useEffect, useMemo, useRef, useState, Suspense, type ReactNode } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { getEntryFor, saveProgress, getCatalogCache, saveCatalogCache, getChapterCache, removeChapterCache, removeChapterCaches, type HistoryEntry } from "@/lib/history";
+import { getEntryFor, saveProgress, getCatalogCache, saveCatalogCache, getChapterCache, reconcileChapterCaches, removeChapterCache, removeChapterCaches, type HistoryEntry } from "@/lib/history";
 import { downloadChapterForOffline, downloadChaptersForOffline } from "@/lib/offline";
-import { getVolumeProgressPercent } from "@/lib/download-progress";
+import { adjustActiveDownloadCounts, getVolumeProgressPercent } from "@/lib/download-progress";
 import { createRequestQueue } from "@/lib/download-queue";
 import { canOpenOfflineResource } from "@/lib/offline-access";
 import { useOnlineStatus } from "@/lib/use-online-status";
@@ -80,6 +80,7 @@ function CatalogContent() {
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const autoScrolledToLastChapterRef = useRef(false);
   const activeVolumeKeysRef = useRef(new Set<string>());
+  const activeChapterCountsRef = useRef(new Map<string, number>());
   const isOnline = useOnlineStatus();
   const [searchQuery, setSearchQuery] = useState("");
   const [downloadedMap, setDownloadedMap] = useState<Record<string, boolean>>({});
@@ -88,6 +89,12 @@ function CatalogContent() {
   const [downloadingVolumeMap, setDownloadingVolumeMap] = useState<Record<string, { completed: number; total: number }>>({});
   const [downloadMessage, setDownloadMessage] = useState("");
   const [isMobile, setIsMobile] = useState(false);
+
+  function adjustActiveDownloads(chapterUrls: string[], delta: 1 | -1) {
+    const next = adjustActiveDownloadCounts(activeChapterCountsRef.current, chapterUrls, delta);
+    activeChapterCountsRef.current = next;
+    setDownloadingChapterMap(Object.fromEntries([...next.keys()].map(url => [url, true])));
+  }
 
   const lastChapterUrl = entry?.lastChapterUrl ?? null;
   const lastChapterTitle = entry?.lastChapterTitle ?? "";
@@ -115,7 +122,7 @@ function CatalogContent() {
     const next: Record<string, boolean> = {};
     for (const group of nextGroups) {
       for (const ch of group.chapters) {
-        if (ch.url && ch.url !== "null") next[ch.url] = !!getChapterCache(ch.url);
+        if (ch.url && ch.url !== "null") next[ch.url] = getChapterCache(ch.url)?.pinned === true;
       }
     }
     setDownloadedMap(next);
@@ -222,8 +229,8 @@ function CatalogContent() {
       setDownloadMessage("目前沒有網路，無法下載新章節。已下載內容仍可離線閱讀。");
       return;
     }
-    if (downloadingChapterMap[ch.url]) return;
-    setDownloadingChapterMap(prev => ({ ...prev, [ch.url!]: true }));
+    if (activeChapterCountsRef.current.has(ch.url)) return;
+    adjustActiveDownloads([ch.url], 1);
     setChapterProgressMap(prev => ({ ...prev, [ch.url!]: 0 }));
     setDownloadMessage(`正在預下載：${ch.title}`);
     try {
@@ -235,7 +242,7 @@ function CatalogContent() {
     } catch (e) {
       setDownloadMessage(`下載失敗：${String(e)}`);
     } finally {
-      setDownloadingChapterMap(prev => { const next = { ...prev }; delete next[ch.url!]; return next; });
+      adjustActiveDownloads([ch.url], -1);
       setChapterProgressMap(prev => { const next = { ...prev }; delete next[ch.url!]; return next; });
     }
   }
@@ -254,7 +261,7 @@ function CatalogContent() {
     if (activeVolumeKeysRef.current.has(key)) return;
     activeVolumeKeysRef.current.add(key);
     setDownloadingVolumeMap(prev => ({ ...prev, [key]: { completed: 0, total: urls.length } }));
-    setDownloadingChapterMap(prev => ({ ...prev, ...Object.fromEntries(urls.map(url => [url, true])) }));
+    adjustActiveDownloads(urls, 1);
     setChapterProgressMap(prev => ({ ...prev, ...Object.fromEntries(urls.map(url => [url, downloadedMap[url] ? 100 : 0])) }));
     setDownloadMessage(`${group.volTitle || `第 ${volumeIndex + 1} 卷`} 已加入整卷下載佇列。`);
     try {
@@ -267,7 +274,6 @@ function CatalogContent() {
           },
           onProgress: progress => {
             setDownloadingVolumeMap(prev => ({ ...prev, [key]: { completed: progress.completed, total: progress.total } }));
-            setDownloadingChapterMap(prev => { const next = { ...prev }; delete next[progress.chapterUrl]; return next; });
             setChapterProgressMap(prev => ({ ...prev, [progress.chapterUrl]: 100 }));
             setDownloadMessage(
               progress.failed
@@ -289,29 +295,53 @@ function CatalogContent() {
     } finally {
       activeVolumeKeysRef.current.delete(key);
       setDownloadingVolumeMap(prev => { const next = { ...prev }; delete next[key]; return next; });
-      setDownloadingChapterMap(prev => { const next = { ...prev }; for (const url of urls) delete next[url]; return next; });
+      adjustActiveDownloads(urls, -1);
       setChapterProgressMap(prev => { const next = { ...prev }; for (const url of urls) delete next[url]; return next; });
     }
   }
 
-  function handleDeleteChapterDownload(ch: Chapter) {
+  async function handleDeleteChapterDownload(ch: Chapter) {
     if (!ch.url || ch.url === "null") return;
-    removeChapterCache(ch.url);
-    refreshDownloadedMap();
-    setDownloadMessage(`已刪除離線章節：${ch.title}`);
+    if (activeChapterCountsRef.current.has(ch.url)) {
+      setDownloadMessage(`〈${ch.title}〉仍在下載，請完成後再刪除。`);
+      return;
+    }
+    try {
+      await removeChapterCache(ch.url);
+      refreshDownloadedMap();
+      setDownloadMessage(`已刪除離線章節：${ch.title}`);
+    } catch (error) {
+      setDownloadMessage(`刪除離線章節失敗：${String(error)}`);
+    }
   }
 
-  function handleDeleteVolumeDownload(group: VolumeGroup) {
+  async function handleDeleteVolumeDownload(group: VolumeGroup) {
     const urls = group.chapters.map(ch => ch.url).filter((url): url is string => !!url && url !== "null");
-    removeChapterCaches(urls);
-    refreshDownloadedMap();
-    setDownloadMessage(`已刪除 ${group.volTitle || "此卷"} 的離線內容。`);
+    if (urls.some(url => activeChapterCountsRef.current.has(url))) {
+      setDownloadMessage(`〈${group.volTitle || "此卷"}〉仍有章節在下載，請完成後再刪除。`);
+      return;
+    }
+    try {
+      await removeChapterCaches(urls);
+      refreshDownloadedMap();
+      setDownloadMessage(`已刪除 ${group.volTitle || "此卷"} 的離線內容。`);
+    } catch (error) {
+      setDownloadMessage(`刪除此卷離線內容失敗：${String(error)}`);
+    }
   }
 
-  function handleDeleteAllDownloads() {
-    removeChapterCaches(downloadableChapterUrls);
-    refreshDownloadedMap();
-    setDownloadMessage("已刪除本書所有已下載章節。");
+  async function handleDeleteAllDownloads() {
+    if (activeChapterCountsRef.current.size > 0) {
+      setDownloadMessage("仍有章節在下載，請全部完成後再刪除本書離線內容。");
+      return;
+    }
+    try {
+      await removeChapterCaches(downloadableChapterUrls);
+      refreshDownloadedMap();
+      setDownloadMessage("已刪除本書所有已下載章節。");
+    } catch (error) {
+      setDownloadMessage(`刪除本書離線內容失敗：${String(error)}`);
+    }
   }
 
   // Shared logic to apply a fetched catalog to state + persistence
@@ -496,7 +526,12 @@ function CatalogContent() {
   }, [lastChapterUrl, groups]);
 
   useEffect(() => {
+    let cancelled = false;
     refreshDownloadedMap(groups);
+    void reconcileChapterCaches()
+      .then(() => { if (!cancelled) refreshDownloadedMap(groups); })
+      .catch(() => { /* keep the synchronous metadata view if storage is unavailable */ });
+    return () => { cancelled = true; };
   }, [groups]);
 
   const toggleCollapse = (gi: number) =>
@@ -595,9 +630,10 @@ function CatalogContent() {
                 {downloadedCount > 0 && (
                   <button
                     onClick={handleDeleteAllDownloads}
+                    disabled={Object.keys(downloadingChapterMap).length > 0}
                     aria-label="刪除本書所有已下載章節"
-                    title="刪除本書已下載"
-                    style={{ ...iconButtonBase, color: "#ffb3b3", cursor: "pointer" }}
+                    title={Object.keys(downloadingChapterMap).length > 0 ? "下載完成後才能刪除" : "刪除本書已下載"}
+                    style={{ ...iconButtonBase, color: "#ffb3b3", cursor: Object.keys(downloadingChapterMap).length > 0 ? "not-allowed" : "pointer", opacity: Object.keys(downloadingChapterMap).length > 0 ? 0.45 : 1 }}
                   >
                     <TrashIcon style={{ fontSize: 15 }} />
                   </button>
@@ -826,6 +862,7 @@ function CatalogContent() {
           const volumeKey = `${originalGi}:${group.volTitle}`;
           const volumeProgress = downloadingVolumeMap[volumeKey];
           const volumeDownloading = !!volumeProgress;
+          const volumeHasActiveDownload = volumeUrls.some(url => downloadingChapterMap[url]);
           const volumePercent = getVolumeProgressPercent(volumeUrls, chapterProgressMap);
 
           return (
@@ -875,9 +912,10 @@ function CatalogContent() {
                     {volumeDownloaded > 0 && (
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDeleteVolumeDownload(group); }}
+                        disabled={volumeHasActiveDownload}
                         aria-label={`刪除此卷離線內容：${group.volTitle || "此卷"}`}
-                        title="刪除此卷"
-                        style={{ ...iconButtonBase, width: 34, height: 34, color: "#ffb3b3", cursor: "pointer" }}
+                        title={volumeHasActiveDownload ? "下載完成後才能刪除" : "刪除此卷"}
+                        style={{ ...iconButtonBase, width: 34, height: 34, color: "#ffb3b3", cursor: volumeHasActiveDownload ? "not-allowed" : "pointer", opacity: volumeHasActiveDownload ? 0.45 : 1 }}
                       >
                         <TrashIcon style={{ fontSize: 16 }} />
                       </button>

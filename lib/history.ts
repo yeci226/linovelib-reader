@@ -1,5 +1,12 @@
 // lib/history.ts
 import { triggerSyncPush } from "./sync";
+import {
+  CHAPTER_CONTENT_CACHE_NAME,
+  createChapterCacheStore,
+  type ChapterCache,
+} from "./chapter-cache";
+
+export type { ChapterCache, ContentNode } from "./chapter-cache";
 
 const STORAGE_KEY = "linovelib-history";
 const MAX_ENTRIES = 20;
@@ -52,7 +59,11 @@ function load(): HistoryEntry[] {
 
 export function save(entries: HistoryEntry[], skipSync = false): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  } catch {
+    return;
+  }
   if (!skipSync) triggerSyncPush();
 }
 
@@ -230,7 +241,11 @@ function loadBookmarks(): Bookmark[] {
 
 export function saveBookmarks(bms: Bookmark[], skipSync = false): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem(BOOKMARK_KEY, JSON.stringify(bms));
+  try {
+    localStorage.setItem(BOOKMARK_KEY, JSON.stringify(bms));
+  } catch {
+    return;
+  }
   if (!skipSync) triggerSyncPush();
 }
 
@@ -304,7 +319,11 @@ export function loadBookshelf(): BookshelfEntry[] {
 
 export function saveBookshelf(entries: BookshelfEntry[], skipSync = false): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem(BOOKSHELF_KEY, JSON.stringify(entries));
+  try {
+    localStorage.setItem(BOOKSHELF_KEY, JSON.stringify(entries));
+  } catch {
+    return;
+  }
   if (!skipSync) triggerSyncPush();
 }
 
@@ -326,94 +345,64 @@ export function isInBookshelf(catalogUrl: string): boolean {
 // Chapter content cache — stores parsed nodes so re-reading doesn't re-fetch
 // ---------------------------------------------------------------------------
 
-const CHAPTER_CACHE_KEY = "linovelib-chapter-cache";
-const MAX_CHAPTER_CACHE = 300;
+let browserChapterCache: ReturnType<typeof createChapterCacheStore> | null = null;
 
-export type ContentNode = { type: "text"; text: string } | { type: "image"; src: string; alt: string } | { type: "page-number"; text: string };
-
-export type ChapterCache = {
-  title: string;
-  subtitle: string;
-  nodes: ContentNode[];
-  nextChapterUrl: string | null;
-  prevChapterUrl?: string | null;
-  pinned?: boolean;
-  cachedAt: number;
-};
-
-function loadChapterCacheMap(): Record<string, ChapterCache> {
-  if (typeof window === "undefined") return {};
-  try {
-    return JSON.parse(localStorage.getItem(CHAPTER_CACHE_KEY) ?? "{}") as Record<string, ChapterCache>;
-  } catch {
-    return {};
+function getBrowserChapterCache() {
+  if (typeof window === "undefined") return null;
+  if (!browserChapterCache) {
+    let storage: Pick<Storage, "getItem" | "setItem" | "removeItem" | "length" | "key">;
+    try {
+      storage = window.localStorage;
+    } catch {
+      storage = {
+        length: 0,
+        key: () => null,
+        getItem: () => null,
+        setItem: () => { throw new DOMException("localStorage unavailable", "SecurityError"); },
+        removeItem: () => { throw new DOMException("localStorage unavailable", "SecurityError"); },
+      };
+    }
+    browserChapterCache = createChapterCacheStore({
+      storage,
+      openCache: async () => await caches.open(CHAPTER_CONTENT_CACHE_NAME),
+      origin: window.location.origin,
+      runExclusive: async task => {
+        if (navigator.locks) {
+          return await navigator.locks.request("linovelib-chapter-cache-mutation-v1", task);
+        }
+        return await task();
+      },
+    });
   }
-}
-
-function saveChapterCacheMap(raw: Record<string, ChapterCache>): void {
-  const entries = Object.entries(raw)
-    .sort((a, b) => {
-      const pinDiff = Number(!!b[1].pinned) - Number(!!a[1].pinned);
-      return pinDiff || (b[1].cachedAt - a[1].cachedAt);
-    })
-    .slice(0, MAX_CHAPTER_CACHE);
-  localStorage.setItem(CHAPTER_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  return browserChapterCache;
 }
 
 export function getChapterCache(chapterUrl: string): ChapterCache | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = loadChapterCacheMap();
-    const entry = raw[chapterUrl];
-    if (!entry) return null;
-    return entry;
-  } catch {
-    return null;
-  }
+  return getBrowserChapterCache()?.getMetadata(chapterUrl) ?? null;
+}
+
+export async function loadChapterCache(chapterUrl: string): Promise<ChapterCache | null> {
+  return await getBrowserChapterCache()?.load(chapterUrl) ?? null;
 }
 
 export function getCachedChapterUrls(): Set<string> {
-  if (typeof window === "undefined") return new Set();
-  try {
-    return new Set(Object.keys(loadChapterCacheMap()));
-  } catch {
-    return new Set();
-  }
+  return getBrowserChapterCache()?.getCachedUrls() ?? new Set();
 }
 
-export function saveChapterCache(chapterUrl: string, data: Omit<ChapterCache, "cachedAt">): void {
-  if (typeof window === "undefined") return;
-  try {
-    const raw = loadChapterCacheMap();
-    raw[chapterUrl] = { ...data, cachedAt: Date.now() };
-    saveChapterCacheMap(raw);
-  } catch {
-    // Quota exceeded — silently ignore
-  }
+export async function reconcileChapterCaches(): Promise<Set<string>> {
+  return await getBrowserChapterCache()?.reconcile() ?? new Set();
 }
 
-export function removeChapterCache(chapterUrl: string): void {
-  if (typeof window === "undefined" || !chapterUrl) return;
-  try {
-    const raw = loadChapterCacheMap();
-    delete raw[chapterUrl];
-    localStorage.setItem(CHAPTER_CACHE_KEY, JSON.stringify(raw));
-  } catch {
-    // ignore
-  }
+export async function saveChapterCache(chapterUrl: string, data: Omit<ChapterCache, "cachedAt">): Promise<void> {
+  await getBrowserChapterCache()?.save(chapterUrl, data);
 }
 
-export function removeChapterCaches(chapterUrls: string[]): void {
-  if (typeof window === "undefined") return;
-  try {
-    const raw = loadChapterCacheMap();
-    for (const chapterUrl of chapterUrls) {
-      if (chapterUrl) delete raw[chapterUrl];
-    }
-    localStorage.setItem(CHAPTER_CACHE_KEY, JSON.stringify(raw));
-  } catch {
-    // ignore
-  }
+export async function removeChapterCache(chapterUrl: string): Promise<void> {
+  await getBrowserChapterCache()?.remove(chapterUrl);
+}
+
+export async function removeChapterCaches(chapterUrls: string[]): Promise<void> {
+  await getBrowserChapterCache()?.removeMany(chapterUrls);
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +463,10 @@ export function loadSettings(): ReaderSettings {
 
 export function saveSettings(settings: ReaderSettings, skipSync = false): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    return;
+  }
   if (!skipSync) triggerSyncPush();
 }

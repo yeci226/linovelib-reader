@@ -8,12 +8,14 @@ const swSource = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8
 type SWOptions = {
   cacheMatch?: (request: unknown) => unknown;
   fetchImpl?: (request: unknown) => Promise<unknown>;
+  cacheKeys?: string[];
 };
 
 function loadServiceWorker(options: SWOptions = {}) {
   const listeners: Record<string, (event: any) => void> = {};
   const fetchCalls: string[] = [];
   const putCalls: string[] = [];
+  const deletedCaches: string[] = [];
   const cache = {
     addAll: async () => undefined,
     match: async () => null,
@@ -48,8 +50,8 @@ function loadServiceWorker(options: SWOptions = {}) {
     caches: {
       match: async (request: unknown) => options.cacheMatch?.(request) ?? null,
       open: async () => cache,
-      keys: async () => [],
-      delete: async () => true,
+      keys: async () => options.cacheKeys ?? [],
+      delete: async (name: string) => { deletedCaches.push(name); return true; },
     },
     self: {
       location: { origin: "https://reader.example" },
@@ -61,7 +63,7 @@ function loadServiceWorker(options: SWOptions = {}) {
     },
   };
   vm.runInNewContext(swSource, sandbox);
-  return { listeners, fetchCalls, putCalls };
+  return { listeners, fetchCalls, putCalls, deletedCaches };
 }
 
 function navigationRequest() {
@@ -114,4 +116,16 @@ test("service worker install precaches scripts and styles required by app shells
   await installPromise;
   assert.ok(fetchCalls.includes("/_next/static/app.js"), "app JavaScript should be precached");
   assert.ok(fetchCalls.includes("/_next/static/app.css"), "app styles should be precached");
+});
+
+test("service worker activation preserves downloaded chapter content", async () => {
+  const { listeners, deletedCaches } = loadServiceWorker({
+    cacheKeys: ["linovelib-v2", "linovelib-chapter-content-v1"],
+  });
+  let activatePromise: Promise<unknown> | undefined;
+  listeners.activate({ waitUntil: (promise: Promise<unknown>) => { activatePromise = Promise.resolve(promise); } });
+  assert.ok(activatePromise, "activate work should be registered");
+  await activatePromise;
+  assert.ok(deletedCaches.includes("linovelib-v2"), "obsolete app caches should still be removed");
+  assert.ok(!deletedCaches.includes("linovelib-chapter-content-v1"), "downloaded chapter content must survive service worker upgrades");
 });

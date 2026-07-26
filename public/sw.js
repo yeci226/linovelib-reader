@@ -1,6 +1,7 @@
-const CACHE_NAME = "linovelib-v3";
+const CACHE_NAME = "linovelib-v4";
 const IMAGE_CACHE_NAME = "linovelib-images-v2";
 const OFFLINE_ROUTE_CACHE_NAME = "linovelib-offline-routes-v1";
+const CHAPTER_CONTENT_CACHE_NAME = "linovelib-chapter-content-v1";
 const IMAGE_CACHE_MAX = 200;
 const PRECACHE_URLS = ["/", "/catalog", "/read", "/bookshelf", "/settings"];
 
@@ -55,7 +56,7 @@ self.addEventListener("activate", (event) => {
     const keys = await caches.keys();
     await Promise.all(
       keys
-        .filter((key) => ![CACHE_NAME, IMAGE_CACHE_NAME, OFFLINE_ROUTE_CACHE_NAME].includes(key))
+        .filter((key) => ![CACHE_NAME, IMAGE_CACHE_NAME, OFFLINE_ROUTE_CACHE_NAME, CHAPTER_CONTENT_CACHE_NAME].includes(key))
         .map((key) => caches.delete(key))
     );
     await self.clients.claim();
